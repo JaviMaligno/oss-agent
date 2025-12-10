@@ -1,0 +1,135 @@
+import { Command } from "commander";
+import pc from "picocolors";
+import { logger } from "../../infra/logger.js";
+import { loadConfig, expandPath } from "../config/loader.js";
+import { StateManager } from "../../core/state/state-manager.js";
+import { GitOperations } from "../../core/git/git-operations.js";
+import { IssueProcessor } from "../../core/engine/index.js";
+import { createProvider } from "../../core/ai/provider-factory.js";
+
+export function createWorkCommand(): Command {
+  const command = new Command("work")
+    .description("Work on a specific issue and create a PR")
+    .argument("<issue-url>", "GitHub issue URL")
+    .option("-n, --dry-run", "Analyze issue without making changes", false)
+    .option("-b, --max-budget <usd>", "Maximum budget for this issue in USD", parseFloat)
+    .option("-r, --resume", "Resume from previous session if available", false)
+    .option("--skip-pr", "Skip creating pull request", false)
+    .option("-v, --verbose", "Enable verbose output", false)
+    .action(async (issueUrl: string, options: WorkOptions) => {
+      if (options.verbose) {
+        logger.configure({ level: "debug", verbose: true });
+      }
+
+      try {
+        await runWork(issueUrl, options);
+      } catch (error) {
+        logger.error("Work failed", error);
+        process.exit(1);
+      }
+    });
+
+  return command;
+}
+
+interface WorkOptions {
+  dryRun: boolean;
+  maxBudget?: number;
+  resume: boolean;
+  skipPr: boolean;
+  verbose: boolean;
+}
+
+async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
+  logger.header("OSS Agent - Work on Issue");
+
+  // Load configuration
+  const config = loadConfig();
+  const dataDir = expandPath(config.dataDir);
+
+  // Validate issue URL
+  if (!issueUrl.includes("github.com") || !issueUrl.includes("/issues/")) {
+    logger.error("Invalid issue URL. Expected format: https://github.com/owner/repo/issues/123");
+    process.exit(1);
+  }
+
+  logger.info(`Issue: ${pc.cyan(issueUrl)}`);
+  logger.info(`Mode: ${pc.yellow(config.ai.executionMode)}`);
+  if (options.maxBudget) {
+    logger.info(`Budget: $${options.maxBudget}`);
+  }
+  if (options.dryRun) {
+    logger.warn("Dry run mode - no changes will be made");
+  }
+
+  // Initialize components
+  const stateManager = new StateManager(dataDir);
+  const gitOps = new GitOperations(config.git, dataDir);
+  const aiProvider = await createProvider(config);
+
+  // Check AI provider availability
+  const available = await aiProvider.isAvailable();
+  if (!available) {
+    logger.error(`AI provider '${aiProvider.name}' is not available.`);
+    if (config.ai.executionMode === "sdk") {
+      logger.info("Hint: Set ANTHROPIC_API_KEY or switch to CLI mode:");
+      logger.info("  oss-agent config set ai.executionMode cli");
+    } else {
+      logger.info("Hint: Ensure 'claude' CLI is installed and authenticated");
+    }
+    stateManager.close();
+    process.exit(1);
+  }
+
+  logger.info(`AI Provider: ${pc.green(aiProvider.name)}`);
+  console.error("");
+
+  // Create processor and run
+  const processor = new IssueProcessor(config, stateManager, gitOps, aiProvider);
+
+  try {
+    const processOptions: Parameters<typeof processor.processIssue>[0] = {
+      issueUrl,
+      resume: options.resume,
+      skipPR: options.skipPr || options.dryRun,
+    };
+    if (options.maxBudget !== undefined) {
+      processOptions.maxBudgetUsd = options.maxBudget;
+    }
+    const result = await processor.processIssue(processOptions);
+
+    console.error("");
+    logger.header("Results");
+
+    if (result.success) {
+      logger.success("Issue processed successfully!");
+
+      console.error("");
+      console.error(pc.dim("Metrics:"));
+      console.error(`  Turns: ${result.metrics.turns}`);
+      console.error(`  Duration: ${(result.metrics.durationMs / 1000).toFixed(1)}s`);
+      console.error(`  Files changed: ${result.metrics.filesChanged}`);
+      console.error(`  Lines changed: ${result.metrics.linesChanged}`);
+      if (result.metrics.costUsd > 0) {
+        console.error(`  Cost: $${result.metrics.costUsd.toFixed(4)}`);
+      }
+
+      if (result.prUrl) {
+        console.error("");
+        console.error(pc.green(`Pull Request: ${result.prUrl}`));
+      }
+    } else {
+      logger.error(`Issue processing failed: ${result.error}`);
+
+      console.error("");
+      console.error(pc.dim("Partial metrics:"));
+      console.error(`  Turns: ${result.metrics.turns}`);
+      console.error(`  Duration: ${(result.metrics.durationMs / 1000).toFixed(1)}s`);
+
+      stateManager.close();
+      process.exit(1);
+    }
+  } finally {
+    stateManager.close();
+  }
+}

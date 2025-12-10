@@ -1,0 +1,293 @@
+import { spawn } from "node:child_process";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import {
+  AIProvider,
+  QueryOptions,
+  QueryResult,
+  ProviderCapabilities,
+  ProviderUsage,
+} from "./types.js";
+import { logger } from "../../infra/logger.js";
+import { AIConfig } from "../../types/config.js";
+
+export class ClaudeCLIProvider implements AIProvider {
+  readonly name = "claude-cli";
+
+  readonly capabilities: ProviderCapabilities = {
+    costTracking: false, // CLI doesn't report costs in output
+    sessionResume: true, // Can use --resume
+    streaming: true, // Output streams to terminal
+    budgetLimits: false, // No budget control in CLI mode
+  };
+
+  private usage: ProviderUsage = {
+    totalQueries: 0,
+    totalCostUsd: 0,
+    totalTurns: 0,
+    queriesToday: 0,
+    costTodayUsd: 0,
+  };
+
+  private logDir: string;
+
+  constructor(
+    private config: AIConfig,
+    dataDir: string
+  ) {
+    this.logDir = join(dataDir, "logs", "claude-sessions");
+    if (!existsSync(this.logDir)) {
+      mkdirSync(this.logDir, { recursive: true });
+    }
+  }
+
+  async isAvailable(): Promise<boolean> {
+    const cliPath = this.config.cli.path;
+
+    return new Promise((resolve) => {
+      const proc = spawn(cliPath, ["--version"], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let output = "";
+      proc.stdout.on("data", (data: Buffer) => {
+        output += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (code === 0 && output.toLowerCase().includes("claude")) {
+          logger.debug(`Claude CLI found: ${output.trim()}`);
+          resolve(true);
+        } else {
+          logger.warn(`Claude CLI not available at ${cliPath}`);
+          resolve(false);
+        }
+      });
+
+      proc.on("error", () => {
+        resolve(false);
+      });
+    });
+  }
+
+  async query(prompt: string, options: QueryOptions): Promise<QueryResult> {
+    const startTime = Date.now();
+    const sessionLogFile = join(
+      this.logDir,
+      `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`
+    );
+
+    const args = this.buildArgs(prompt, options);
+
+    logger.debug("Spawning Claude CLI", { args: args.join(" "), cwd: options.cwd });
+
+    return new Promise((resolve) => {
+      const proc = spawn(this.config.cli.path, args, {
+        cwd: options.cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          // Ensure CLI doesn't try to use interactive features
+          TERM: "dumb",
+          CI: "true",
+        },
+      });
+
+      let stdout = "";
+      let stderr = "";
+      let sessionId: string | undefined;
+      let turns = 0;
+
+      // Write prompt to stdin and close
+      proc.stdin.write(prompt);
+      proc.stdin.end();
+
+      proc.stdout.on("data", (data: Buffer) => {
+        const chunk = data.toString();
+        stdout += chunk;
+
+        // Log to file in real-time
+        this.appendToLog(sessionLogFile, `[STDOUT] ${chunk}`);
+
+        // Try to extract session ID from output
+        const sessionMatch = chunk.match(/session[:\s]+([a-zA-Z0-9-]+)/i);
+        if (sessionMatch?.[1]) {
+          sessionId = sessionMatch[1];
+        }
+
+        // Count turns (rough estimate based on assistant responses)
+        if (chunk.includes("Assistant:") || chunk.includes("Claude:")) {
+          turns++;
+        }
+      });
+
+      proc.stderr.on("data", (data: Buffer) => {
+        const chunk = data.toString();
+        stderr += chunk;
+        this.appendToLog(sessionLogFile, `[STDERR] ${chunk}`);
+
+        // Log progress to console (summarized)
+        if (chunk.includes("Tool:") || chunk.includes("Reading") || chunk.includes("Writing")) {
+          const line = chunk.split("\n")[0];
+          if (line) {
+            logger.debug(line.trim());
+          }
+        }
+      });
+
+      proc.on("close", (code) => {
+        const durationMs = Date.now() - startTime;
+
+        // Update usage stats
+        this.usage.totalQueries++;
+        this.usage.queriesToday++;
+        this.usage.totalTurns += turns;
+
+        // Log summary
+        this.appendToLog(
+          sessionLogFile,
+          `\n--- Session Complete ---\nExit code: ${code}\nDuration: ${durationMs}ms\nTurns: ${turns}\n`
+        );
+
+        if (code === 0) {
+          logger.success(`Claude CLI completed in ${(durationMs / 1000).toFixed(1)}s`);
+          logger.info(`Session log: ${sessionLogFile}`);
+
+          const result: QueryResult = {
+            success: true,
+            output: this.extractFinalOutput(stdout),
+            turns,
+            durationMs,
+            rawOutput: stdout,
+          };
+          if (sessionId !== undefined) {
+            result.sessionId = sessionId;
+          }
+          resolve(result);
+        } else {
+          const errorMsg = stderr || `Claude CLI exited with code ${code}`;
+          logger.error(`Claude CLI failed: ${errorMsg}`);
+
+          resolve({
+            success: false,
+            output: "",
+            error: errorMsg,
+            turns,
+            durationMs,
+            rawOutput: stdout + "\n" + stderr,
+          });
+        }
+      });
+
+      proc.on("error", (err) => {
+        const durationMs = Date.now() - startTime;
+        logger.error(`Failed to spawn Claude CLI: ${err.message}`);
+
+        resolve({
+          success: false,
+          output: "",
+          error: `Failed to spawn Claude CLI: ${err.message}`,
+          turns: 0,
+          durationMs,
+        });
+      });
+
+      // Handle timeout
+      if (options.timeoutMs) {
+        setTimeout(() => {
+          if (!proc.killed) {
+            proc.kill("SIGTERM");
+            logger.warn(`Claude CLI timed out after ${options.timeoutMs}ms`);
+          }
+        }, options.timeoutMs);
+      }
+    });
+  }
+
+  getUsage(): ProviderUsage {
+    return { ...this.usage };
+  }
+
+  private buildArgs(_prompt: string, options: QueryOptions): string[] {
+    const args: string[] = [];
+
+    // Print mode (non-interactive, outputs result)
+    args.push("--print");
+
+    // Auto-approve if configured
+    if (this.config.cli.autoApprove) {
+      args.push("--dangerously-skip-permissions");
+    }
+
+    // Output format for easier parsing
+    args.push("--output-format", "text");
+
+    // Max turns
+    if (options.maxTurns ?? this.config.cli.maxTurns) {
+      args.push("--max-turns", String(options.maxTurns ?? this.config.cli.maxTurns));
+    }
+
+    // Model selection (if supported)
+    if (options.model ?? this.config.model) {
+      args.push("--model", options.model ?? this.config.model);
+    }
+
+    // The prompt is passed via stdin, but we can also use -p for simple prompts
+    // Using stdin allows for larger prompts with special characters
+    args.push("--");
+
+    return args;
+  }
+
+  private extractFinalOutput(stdout: string): string {
+    // Try to extract the final assistant response
+    // The output format varies, so we try multiple patterns
+
+    // Pattern 1: Look for last "Assistant:" or similar block
+    const lines = stdout.split("\n");
+    let inAssistantBlock = false;
+    let output: string[] = [];
+
+    for (const line of lines) {
+      if (
+        line.startsWith("Assistant:") ||
+        line.startsWith("Claude:") ||
+        line.includes("Response:")
+      ) {
+        inAssistantBlock = true;
+        output = [];
+        continue;
+      }
+      if (inAssistantBlock) {
+        if (line.startsWith("User:") || line.startsWith("Tool:") || line.startsWith("---")) {
+          inAssistantBlock = false;
+        } else {
+          output.push(line);
+        }
+      }
+    }
+
+    if (output.length > 0) {
+      return output.join("\n").trim();
+    }
+
+    // Fallback: return last non-empty chunk of output
+    const chunks = stdout.split(/\n\n+/);
+    for (let i = chunks.length - 1; i >= 0; i--) {
+      const chunk = chunks[i]?.trim();
+      if (chunk && chunk.length > 10) {
+        return chunk;
+      }
+    }
+
+    return stdout.trim();
+  }
+
+  private appendToLog(file: string, content: string): void {
+    try {
+      writeFileSync(file, content, { flag: "a" });
+    } catch {
+      // Ignore log write errors
+    }
+  }
+}
