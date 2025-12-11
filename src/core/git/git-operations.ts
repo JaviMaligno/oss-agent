@@ -58,6 +58,14 @@ export class GitOperations {
   }
 
   /**
+   * Get the path where a repository would be stored.
+   * Used for locking purposes before the repo is actually cloned.
+   */
+  getRepoPath(owner: string, name: string): string {
+    return join(this.reposDir, owner, name);
+  }
+
+  /**
    * Clone a repository (or use existing clone)
    * For fork-based workflow, use cloneWithFork instead.
    */
@@ -160,6 +168,12 @@ export class GitOperations {
 
   /**
    * Create a new branch for working on an issue
+   *
+   * Handles existing branches according to config.existingBranchStrategy:
+   * - "auto-clean": Delete existing branch (local + remote) and start fresh
+   * - "reuse": Reuse existing branch if found
+   * - "suffix": Create a new branch with numeric suffix (e.g., branch-2, branch-3)
+   * - "fail": Fail if branch already exists
    */
   async createBranch(
     repoPath: string,
@@ -176,13 +190,95 @@ export class GitOperations {
       .replace(/^-|-$/g, "")
       .slice(0, 40);
 
-    const branchName = `${this.config.branchPrefix}/issue-${issueNumber}-${sanitizedTitle}`;
+    const baseBranchName = `${this.config.branchPrefix}/issue-${issueNumber}-${sanitizedTitle}`;
+    let branchName = baseBranchName;
 
-    // Check if branch already exists
-    const exists = await this.branchExists(repoPath, branchName);
+    // Check if branch already exists locally
+    const existsLocal = await this.branchExists(repoPath, branchName);
+
+    // Check if branch exists on remotes (origin and fork)
+    const existsOnOrigin = await this.remoteBranchExists(repoPath, "origin", branchName);
+    const existsOnFork = await this.remoteBranchExists(repoPath, "fork", branchName);
+
+    const exists = existsLocal || existsOnOrigin || existsOnFork;
+
     if (exists) {
-      logger.debug(`Branch already exists: ${branchName}`);
-      return { name: branchName, created: false };
+      const strategy = this.config.existingBranchStrategy ?? "auto-clean";
+
+      if (strategy === "fail") {
+        throw new GitOperationError(
+          `Branch already exists: ${branchName}. ` +
+            `Configure git.existingBranchStrategy to "auto-clean", "reuse", or "suffix" to handle this.`
+        );
+      }
+
+      if (strategy === "reuse") {
+        logger.info(`Reusing existing branch: ${branchName}`);
+        // Make sure local branch exists (might only be on remote)
+        if (!existsLocal && (existsOnOrigin || existsOnFork)) {
+          const remote = existsOnFork ? "fork" : "origin";
+          await this.git(["branch", branchName, `${remote}/${branchName}`], { cwd: repoPath });
+        }
+        return { name: branchName, created: false };
+      }
+
+      if (strategy === "suffix") {
+        // Find the next available suffix
+        let suffix = 2;
+        while (suffix <= 100) {
+          const candidateName = `${baseBranchName}-${suffix}`;
+          const candidateExistsLocal = await this.branchExists(repoPath, candidateName);
+          const candidateExistsFork = await this.remoteBranchExists(
+            repoPath,
+            "fork",
+            candidateName
+          );
+          const candidateExistsOrigin = await this.remoteBranchExists(
+            repoPath,
+            "origin",
+            candidateName
+          );
+
+          if (!candidateExistsLocal && !candidateExistsFork && !candidateExistsOrigin) {
+            branchName = candidateName;
+            logger.info(`Using suffixed branch name: ${branchName}`);
+            break;
+          }
+          suffix++;
+        }
+
+        if (suffix > 100) {
+          throw new GitOperationError(
+            `Could not find available branch name after 100 attempts for: ${baseBranchName}`
+          );
+        }
+      } else {
+        // strategy === "auto-clean"
+        logger.info(`Auto-cleaning existing branch: ${branchName}`);
+
+        // Delete local branch if exists
+        if (existsLocal) {
+          try {
+            await this.git(["branch", "-D", branchName], { cwd: repoPath });
+            logger.debug(`Deleted local branch: ${branchName}`);
+          } catch {
+            // May fail if branch is checked out in a worktree - try to remove worktree first
+            logger.debug(`Could not delete local branch, may be in use by worktree`);
+          }
+        }
+
+        // Delete from fork remote if exists
+        if (existsOnFork) {
+          try {
+            await this.git(["push", "fork", "--delete", branchName], { cwd: repoPath });
+            logger.debug(`Deleted branch from fork: ${branchName}`);
+          } catch (error) {
+            logger.debug(`Could not delete branch from fork: ${error}`);
+          }
+        }
+
+        // Note: We don't delete from origin - we typically don't have push access there
+      }
     }
 
     // Create branch without checking it out (worktree will check it out)
@@ -190,6 +286,21 @@ export class GitOperations {
     logger.info(`Created branch: ${branchName}`);
 
     return { name: branchName, created: true };
+  }
+
+  /**
+   * Check if a branch exists on a remote
+   */
+  async remoteBranchExists(repoPath: string, remote: string, branchName: string): Promise<boolean> {
+    try {
+      const result = await this.git(["ls-remote", "--heads", remote, branchName], {
+        cwd: repoPath,
+      });
+      return result.trim().length > 0;
+    } catch {
+      // Remote might not exist (e.g., "fork" when not using fork workflow)
+      return false;
+    }
   }
 
   /**
@@ -221,6 +332,14 @@ export class GitOperations {
 
     logger.info(`Removing worktree: ${worktreePath}`);
     await this.git(["worktree", "remove", worktreePath, "--force"], { cwd: repoPath });
+  }
+
+  /**
+   * Check if there are uncommitted changes (staged or unstaged)
+   */
+  async hasUncommittedChanges(cwd: string): Promise<boolean> {
+    const status = await this.git(["status", "--porcelain"], { cwd });
+    return status.trim().length > 0;
   }
 
   /**
@@ -393,6 +512,89 @@ export class GitOperations {
       insertions: uncommitted.insertions + staged.insertions,
       deletions: uncommitted.deletions + staged.deletions,
     };
+  }
+
+  /**
+   * Get list of files modified in the worktree compared to base branch.
+   * Includes both committed and uncommitted changes.
+   * Used for conflict detection between parallel worktrees.
+   */
+  async getModifiedFiles(worktreePath: string, baseBranch?: string): Promise<string[]> {
+    const base = baseBranch ?? (await this.getDefaultBranch(worktreePath));
+
+    // Get committed changes vs base branch
+    const committedFiles = await this.git(["diff", "--name-only", `origin/${base}...HEAD`], {
+      cwd: worktreePath,
+    });
+
+    // Get uncommitted changes (staged + unstaged)
+    const uncommittedFiles = await this.git(["diff", "--name-only", "HEAD"], {
+      cwd: worktreePath,
+    });
+
+    const stagedFiles = await this.git(["diff", "--name-only", "--staged"], {
+      cwd: worktreePath,
+    });
+
+    // Combine all modified files into a unique set
+    const allFiles = new Set<string>();
+
+    for (const output of [committedFiles, uncommittedFiles, stagedFiles]) {
+      for (const file of output.trim().split("\n")) {
+        if (file.length > 0) {
+          allFiles.add(file);
+        }
+      }
+    }
+
+    return Array.from(allFiles);
+  }
+
+  /**
+   * List all worktrees for a repository
+   */
+  async listWorktrees(repoPath: string): Promise<
+    Array<{
+      path: string;
+      head: string;
+      branch: string | null;
+    }>
+  > {
+    const output = await this.git(["worktree", "list", "--porcelain"], { cwd: repoPath });
+    const worktrees: Array<{ path: string; head: string; branch: string | null }> = [];
+
+    let current: { path?: string; head?: string; branch?: string | null } = {};
+
+    for (const line of output.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        if (current.path) {
+          worktrees.push({
+            path: current.path,
+            head: current.head ?? "",
+            branch: current.branch ?? null,
+          });
+        }
+        current = { path: line.replace("worktree ", "") };
+      } else if (line.startsWith("HEAD ")) {
+        current.head = line.replace("HEAD ", "");
+      } else if (line.startsWith("branch ")) {
+        current.branch = line.replace("branch refs/heads/", "");
+      } else if (line === "detached") {
+        current.branch = null;
+      }
+    }
+
+    // Add the last worktree
+    if (current.path) {
+      worktrees.push({
+        path: current.path,
+        head: current.head ?? "",
+        branch: current.branch ?? null,
+      });
+    }
+
+    // Filter out the main repo (first entry is usually the main worktree)
+    return worktrees.filter((wt) => wt.path !== repoPath);
   }
 
   /**

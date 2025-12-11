@@ -1,4 +1,5 @@
 import { logger } from "../../infra/logger.js";
+import { withRepoLock } from "../../infra/repo-lock.js";
 import { StateManager } from "../state/state-manager.js";
 import { GitOperations, CloneResult } from "../git/git-operations.js";
 import { AIProvider, QueryResult } from "../ai/types.js";
@@ -113,6 +114,7 @@ export class IssueProcessor {
     }
 
     // Check permissions and setup repository (with fork if needed)
+    // These operations need to be serialized per-repository to avoid git lock conflicts
     logger.step(1, 6, "Setting up repository...");
     const cloneResult = await this.setupRepository(owner, repo);
 
@@ -122,18 +124,24 @@ export class IssueProcessor {
       logger.info(`Using fork workflow - will push to ${pushOwner}'s fork`);
     }
 
-    // Create branch for this issue
-    logger.step(2, 6, "Creating branch...");
-    const { name: branchName } = await this.gitOps.createBranch(
-      repoPath,
-      issueNumber,
-      issueData.title,
-      defaultBranch
-    );
+    // Create branch and worktree with repo lock to prevent race conditions
+    // when multiple parallel processes work on the same repository
+    const { branchName, worktreePath } = await withRepoLock(repoPath, async () => {
+      // Create branch for this issue
+      logger.step(2, 6, "Creating branch...");
+      const { name: branchName } = await this.gitOps.createBranch(
+        repoPath,
+        issueNumber,
+        issueData.title,
+        defaultBranch
+      );
 
-    // Create worktree for isolated work
-    logger.step(3, 6, "Setting up worktree...");
-    const worktreePath = await this.gitOps.createWorktree(repoPath, branchName, issue.id);
+      // Create worktree for isolated work
+      logger.step(3, 6, "Setting up worktree...");
+      const worktreePath = await this.gitOps.createWorktree(repoPath, branchName, issue.id);
+
+      return { branchName, worktreePath };
+    });
 
     // Create session if not resuming
     session ??= this.stateManager.createSession({
@@ -279,10 +287,16 @@ export class IssueProcessor {
       };
     }
 
-    // Commit changes
+    // Commit changes (if there are uncommitted changes)
+    // Note: Claude may have already committed the changes
     logger.step(5, 6, "Committing changes...");
-    const commitMessage = this.buildCommitMessage(issueNumber, issueData.title);
-    await this.gitOps.commit(worktreePath, commitMessage);
+    const hasUncommittedChanges = await this.gitOps.hasUncommittedChanges(worktreePath);
+    if (hasUncommittedChanges) {
+      const commitMessage = this.buildCommitMessage(issueNumber, issueData.title);
+      await this.gitOps.commit(worktreePath, commitMessage);
+    } else {
+      logger.debug("No uncommitted changes - Claude may have already committed");
+    }
 
     // Push branch (to fork remote if using fork workflow)
     logger.step(6, 6, "Pushing branch...");
@@ -541,28 +555,37 @@ Changes prepared with assistance from OSS-Agent`;
   /**
    * Setup repository with fork support
    * Checks if user has push access, forks if needed
+   *
+   * Uses a per-repository lock to serialize clone/fetch operations
+   * when multiple parallel processes work on the same repository.
    */
   private async setupRepository(owner: string, repo: string): Promise<CloneResult> {
     const repoUrl = `https://github.com/${owner}/${repo}.git`;
 
-    // Check if user has push access to the repository
-    logger.debug(`Checking permissions for ${owner}/${repo}...`);
-    const permissions = await this.repoService.checkPermissions(owner, repo);
+    // Get the path where this repo would be stored for locking purposes
+    const repoPath = this.gitOps.getRepoPath(owner, repo);
 
-    if (permissions.canPush) {
-      logger.debug(`User has push access to ${owner}/${repo}`);
-      return this.gitOps.clone(repoUrl, owner, repo);
-    }
+    // Use repo lock to serialize clone/fetch operations
+    return withRepoLock(repoPath, async () => {
+      // Check if user has push access to the repository
+      logger.debug(`Checking permissions for ${owner}/${repo}...`);
+      const permissions = await this.repoService.checkPermissions(owner, repo);
 
-    // No push access - need to use fork workflow
-    logger.info(`No push access to ${owner}/${repo}, setting up fork...`);
+      if (permissions.canPush) {
+        logger.debug(`User has push access to ${owner}/${repo}`);
+        return this.gitOps.clone(repoUrl, owner, repo);
+      }
 
-    // Fork the repository (or get existing fork)
-    const { fork } = await this.repoService.forkRepo(owner, repo);
-    const forkUrl = `https://github.com/${fork.owner}/${fork.name}.git`;
+      // No push access - need to use fork workflow
+      logger.info(`No push access to ${owner}/${repo}, setting up fork...`);
 
-    // Clone with fork support
-    return this.gitOps.cloneWithFork(repoUrl, owner, repo, fork.owner, forkUrl);
+      // Fork the repository (or get existing fork)
+      const { fork } = await this.repoService.forkRepo(owner, repo);
+      const forkUrl = `https://github.com/${fork.owner}/${fork.name}.git`;
+
+      // Clone with fork support
+      return this.gitOps.cloneWithFork(repoUrl, owner, repo, fork.owner, forkUrl);
+    });
   }
 
   /**

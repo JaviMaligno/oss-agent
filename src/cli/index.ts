@@ -4,16 +4,19 @@ import { Command } from "commander";
 import pc from "picocolors";
 import {
   createWorkCommand,
+  createWorkParallelCommand,
   createIterateCommand,
   createWatchCommand,
   createHistoryCommand,
   createResumeCommand,
   createStatusCommand,
+  createParallelStatusCommand,
   createConfigCommand,
   createCleanupCommand,
   createDiscoverCommand,
   createSuggestCommand,
   createQueueCommand,
+  createCancelCommand,
 } from "./commands/index.js";
 import { logger } from "../infra/logger.js";
 
@@ -35,16 +38,19 @@ program
 
 // Register commands
 program.addCommand(createWorkCommand());
+program.addCommand(createWorkParallelCommand());
 program.addCommand(createIterateCommand());
 program.addCommand(createWatchCommand());
 program.addCommand(createHistoryCommand());
 program.addCommand(createResumeCommand());
 program.addCommand(createStatusCommand());
+program.addCommand(createParallelStatusCommand());
 program.addCommand(createConfigCommand());
 program.addCommand(createCleanupCommand());
 program.addCommand(createDiscoverCommand());
 program.addCommand(createSuggestCommand());
 program.addCommand(createQueueCommand());
+program.addCommand(createCancelCommand());
 
 // Error handling
 program.exitOverride((err) => {

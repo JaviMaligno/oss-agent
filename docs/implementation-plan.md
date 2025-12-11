@@ -321,23 +321,23 @@ That:
 
 #### 5.1 Worktree Manager
 
-- [ ] Create worktrees for parallel issue work
-- [ ] Branch management per worktree
-- [ ] Cleanup completed/failed worktrees
-- [ ] Resource tracking per worktree
+- [x] Create worktrees for parallel issue work
+- [x] Branch management per worktree
+- [x] Cleanup completed/failed worktrees
+- [x] Resource tracking per worktree
 
 #### 5.2 Parallel Agent Orchestration
 
-- [ ] Semaphore for max concurrent agents
-- [ ] Per-project and global limits
-- [ ] Conflict detection between parallel issues
-- [ ] Aggregate status reporting
+- [x] Semaphore for max concurrent agents
+- [x] Per-project and global limits
+- [x] Conflict detection between parallel issues
+- [x] Aggregate status reporting
 
 #### 5.3 CLI Commands (Phase 5)
 
-- [ ] `oss-agent work-parallel --count N` - Work on N issues in parallel
-- [ ] `oss-agent parallel-status` - Show parallel work status
-- [ ] `oss-agent cancel <issue>` - Cancel specific parallel work
+- [x] `oss-agent work-parallel --count N` - Work on N issues in parallel
+- [x] `oss-agent parallel-status` - Show parallel work status
+- [x] `oss-agent cancel <issue>` - Cancel specific parallel work
 
 ### Deliverables
 

@@ -109,6 +109,7 @@ export function createConfigCommand(): Command {
           defaultBranch: "main",
           commitSignoff: false,
           branchPrefix: "oss-agent",
+          existingBranchStrategy: "auto-clean",
         },
         oss: {
           discoveryMode: "direct",

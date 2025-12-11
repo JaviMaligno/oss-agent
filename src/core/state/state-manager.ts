@@ -139,6 +139,42 @@ export class StateManager {
       CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
       CREATE INDEX IF NOT EXISTS idx_sessions_issue ON sessions(issue_id);
       CREATE INDEX IF NOT EXISTS idx_issue_transitions_issue ON issue_transitions(issue_id);
+
+      -- Parallel work sessions (Phase 5)
+      CREATE TABLE IF NOT EXISTS parallel_sessions (
+        id TEXT PRIMARY KEY,
+        started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        total_issues INTEGER NOT NULL,
+        completed_issues INTEGER DEFAULT 0,
+        failed_issues INTEGER DEFAULT 0,
+        cancelled_issues INTEGER DEFAULT 0,
+        max_concurrent INTEGER NOT NULL,
+        total_cost_usd REAL DEFAULT 0,
+        total_duration_ms INTEGER DEFAULT 0
+      );
+
+      -- Link issues to parallel sessions
+      CREATE TABLE IF NOT EXISTS parallel_session_issues (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parallel_session_id TEXT NOT NULL,
+        issue_url TEXT NOT NULL,
+        issue_id TEXT,
+        session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        started_at TEXT,
+        completed_at TEXT,
+        cost_usd REAL DEFAULT 0,
+        error TEXT,
+        FOREIGN KEY (parallel_session_id) REFERENCES parallel_sessions(id),
+        FOREIGN KEY (issue_id) REFERENCES issues(id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      -- Indexes for parallel sessions
+      CREATE INDEX IF NOT EXISTS idx_parallel_sessions_status ON parallel_sessions(status);
+      CREATE INDEX IF NOT EXISTS idx_parallel_session_issues_parallel ON parallel_session_issues(parallel_session_id);
     `);
   }
 
@@ -489,30 +525,52 @@ export class StateManager {
    * Save or update a work record
    */
   saveWorkRecord(record: IssueWorkRecord): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO issue_work_records (issue_id, session_id, branch_name, worktree_path,
-                                       pr_number, pr_url, attempts, last_attempt_at, total_cost_usd)
-      VALUES (@issueId, @sessionId, @branchName, @worktreePath, @prNumber, @prUrl,
-              @attempts, @lastAttemptAt, @totalCostUsd)
-      ON CONFLICT(issue_id, session_id) DO UPDATE SET
-        pr_number = @prNumber,
-        pr_url = @prUrl,
-        attempts = @attempts,
-        last_attempt_at = @lastAttemptAt,
-        total_cost_usd = @totalCostUsd
-    `);
+    // Check if record exists for this issue_id + session_id
+    const existing = this.db
+      .prepare("SELECT id FROM issue_work_records WHERE issue_id = ? AND session_id = ?")
+      .get(record.issueId, record.sessionId) as { id: number } | undefined;
 
-    stmt.run({
-      issueId: record.issueId,
-      sessionId: record.sessionId,
-      branchName: record.branchName,
-      worktreePath: record.worktreePath,
-      prNumber: record.prNumber ?? null,
-      prUrl: record.prUrl ?? null,
-      attempts: record.attempts,
-      lastAttemptAt: record.lastAttemptAt.toISOString(),
-      totalCostUsd: record.totalCostUsd,
-    });
+    if (existing) {
+      // Update existing record
+      this.db
+        .prepare(
+          `UPDATE issue_work_records SET
+            pr_number = @prNumber,
+            pr_url = @prUrl,
+            attempts = @attempts,
+            last_attempt_at = @lastAttemptAt,
+            total_cost_usd = @totalCostUsd
+          WHERE id = @id`
+        )
+        .run({
+          id: existing.id,
+          prNumber: record.prNumber ?? null,
+          prUrl: record.prUrl ?? null,
+          attempts: record.attempts,
+          lastAttemptAt: record.lastAttemptAt.toISOString(),
+          totalCostUsd: record.totalCostUsd,
+        });
+    } else {
+      // Insert new record
+      this.db
+        .prepare(
+          `INSERT INTO issue_work_records (issue_id, session_id, branch_name, worktree_path,
+                                           pr_number, pr_url, attempts, last_attempt_at, total_cost_usd)
+          VALUES (@issueId, @sessionId, @branchName, @worktreePath, @prNumber, @prUrl,
+                  @attempts, @lastAttemptAt, @totalCostUsd)`
+        )
+        .run({
+          issueId: record.issueId,
+          sessionId: record.sessionId,
+          branchName: record.branchName,
+          worktreePath: record.worktreePath,
+          prNumber: record.prNumber ?? null,
+          prUrl: record.prUrl ?? null,
+          attempts: record.attempts,
+          lastAttemptAt: record.lastAttemptAt.toISOString(),
+          totalCostUsd: record.totalCostUsd,
+        });
+    }
   }
 
   /**
@@ -626,6 +684,247 @@ export class StateManager {
     this.db.close();
   }
 
+  // ============ Parallel Session Methods (Phase 5) ============
+
+  /**
+   * Create a new parallel work session
+   */
+  createParallelSession(options: { issueUrls: string[]; maxConcurrent: number }): ParallelSession {
+    const id = `ps-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date();
+
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO parallel_sessions (id, started_at, status, total_issues, max_concurrent)
+           VALUES (?, ?, 'active', ?, ?)`
+        )
+        .run(id, now.toISOString(), options.issueUrls.length, options.maxConcurrent);
+
+      const insertIssue = this.db.prepare(
+        `INSERT INTO parallel_session_issues (parallel_session_id, issue_url, status)
+         VALUES (?, ?, 'pending')`
+      );
+
+      for (const url of options.issueUrls) {
+        insertIssue.run(id, url);
+      }
+    })();
+
+    logger.debug(`Created parallel session ${id} with ${options.issueUrls.length} issues`);
+
+    return {
+      id,
+      startedAt: now,
+      completedAt: null,
+      status: "active",
+      totalIssues: options.issueUrls.length,
+      completedIssues: 0,
+      failedIssues: 0,
+      cancelledIssues: 0,
+      maxConcurrent: options.maxConcurrent,
+      totalCostUsd: 0,
+      totalDurationMs: 0,
+    };
+  }
+
+  /**
+   * Get a parallel session by ID
+   */
+  getParallelSession(id: string): ParallelSession | null {
+    const row = this.db.prepare("SELECT * FROM parallel_sessions WHERE id = ?").get(id) as
+      | ParallelSessionRow
+      | undefined;
+
+    return row ? this.rowToParallelSession(row) : null;
+  }
+
+  /**
+   * Get active parallel sessions
+   */
+  getActiveParallelSessions(): ParallelSession[] {
+    const rows = this.db
+      .prepare("SELECT * FROM parallel_sessions WHERE status = 'active' ORDER BY started_at DESC")
+      .all() as ParallelSessionRow[];
+
+    return rows.map((row) => this.rowToParallelSession(row));
+  }
+
+  /**
+   * Get all parallel sessions
+   */
+  getAllParallelSessions(limit = 20): ParallelSession[] {
+    const rows = this.db
+      .prepare("SELECT * FROM parallel_sessions ORDER BY started_at DESC LIMIT ?")
+      .all(limit) as ParallelSessionRow[];
+
+    return rows.map((row) => this.rowToParallelSession(row));
+  }
+
+  /**
+   * Update a parallel session
+   */
+  updateParallelSession(
+    id: string,
+    updates: Partial<{
+      status: ParallelSessionStatus;
+      completedIssues: number;
+      failedIssues: number;
+      cancelledIssues: number;
+      totalCostUsd: number;
+      totalDurationMs: number;
+    }>
+  ): void {
+    const setClauses: string[] = [];
+    const params: Record<string, unknown> = { id };
+
+    if (updates.status !== undefined) {
+      setClauses.push("status = @status");
+      params.status = updates.status;
+      if (
+        updates.status === "completed" ||
+        updates.status === "failed" ||
+        updates.status === "cancelled"
+      ) {
+        setClauses.push("completed_at = @completedAt");
+        params.completedAt = new Date().toISOString();
+      }
+    }
+    if (updates.completedIssues !== undefined) {
+      setClauses.push("completed_issues = @completedIssues");
+      params.completedIssues = updates.completedIssues;
+    }
+    if (updates.failedIssues !== undefined) {
+      setClauses.push("failed_issues = @failedIssues");
+      params.failedIssues = updates.failedIssues;
+    }
+    if (updates.cancelledIssues !== undefined) {
+      setClauses.push("cancelled_issues = @cancelledIssues");
+      params.cancelledIssues = updates.cancelledIssues;
+    }
+    if (updates.totalCostUsd !== undefined) {
+      setClauses.push("total_cost_usd = @totalCostUsd");
+      params.totalCostUsd = updates.totalCostUsd;
+    }
+    if (updates.totalDurationMs !== undefined) {
+      setClauses.push("total_duration_ms = @totalDurationMs");
+      params.totalDurationMs = updates.totalDurationMs;
+    }
+
+    if (setClauses.length > 0) {
+      this.db
+        .prepare(`UPDATE parallel_sessions SET ${setClauses.join(", ")} WHERE id = @id`)
+        .run(params);
+    }
+  }
+
+  /**
+   * Get issues for a parallel session
+   */
+  getParallelSessionIssues(parallelSessionId: string): ParallelSessionIssue[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM parallel_session_issues WHERE parallel_session_id = ? ORDER BY id ASC"
+      )
+      .all(parallelSessionId) as ParallelSessionIssueRow[];
+
+    return rows.map((row) => this.rowToParallelSessionIssue(row));
+  }
+
+  /**
+   * Update an issue within a parallel session
+   */
+  updateParallelSessionIssue(
+    parallelSessionId: string,
+    issueUrl: string,
+    updates: Partial<{
+      issueId: string;
+      sessionId: string;
+      status: ParallelSessionIssueStatus;
+      costUsd: number;
+      error: string;
+    }>
+  ): void {
+    const setClauses: string[] = [];
+    const params: Record<string, unknown> = {
+      parallelSessionId,
+      issueUrl,
+    };
+
+    if (updates.issueId !== undefined) {
+      setClauses.push("issue_id = @issueId");
+      params.issueId = updates.issueId;
+    }
+    if (updates.sessionId !== undefined) {
+      setClauses.push("session_id = @sessionId");
+      params.sessionId = updates.sessionId;
+    }
+    if (updates.status !== undefined) {
+      setClauses.push("status = @status");
+      params.status = updates.status;
+
+      if (updates.status === "in_progress") {
+        setClauses.push("started_at = @startedAt");
+        params.startedAt = new Date().toISOString();
+      } else if (
+        updates.status === "completed" ||
+        updates.status === "failed" ||
+        updates.status === "cancelled"
+      ) {
+        setClauses.push("completed_at = @completedAt");
+        params.completedAt = new Date().toISOString();
+      }
+    }
+    if (updates.costUsd !== undefined) {
+      setClauses.push("cost_usd = @costUsd");
+      params.costUsd = updates.costUsd;
+    }
+    if (updates.error !== undefined) {
+      setClauses.push("error = @error");
+      params.error = updates.error;
+    }
+
+    if (setClauses.length > 0) {
+      this.db
+        .prepare(
+          `UPDATE parallel_session_issues SET ${setClauses.join(", ")}
+           WHERE parallel_session_id = @parallelSessionId AND issue_url = @issueUrl`
+        )
+        .run(params);
+    }
+  }
+
+  private rowToParallelSession(row: ParallelSessionRow): ParallelSession {
+    return {
+      id: row.id,
+      startedAt: new Date(row.started_at),
+      completedAt: row.completed_at ? new Date(row.completed_at) : null,
+      status: row.status as ParallelSessionStatus,
+      totalIssues: row.total_issues,
+      completedIssues: row.completed_issues,
+      failedIssues: row.failed_issues,
+      cancelledIssues: row.cancelled_issues,
+      maxConcurrent: row.max_concurrent,
+      totalCostUsd: row.total_cost_usd,
+      totalDurationMs: row.total_duration_ms,
+    };
+  }
+
+  private rowToParallelSessionIssue(row: ParallelSessionIssueRow): ParallelSessionIssue {
+    return {
+      id: row.id,
+      parallelSessionId: row.parallel_session_id,
+      issueUrl: row.issue_url,
+      issueId: row.issue_id,
+      sessionId: row.session_id,
+      status: row.status as ParallelSessionIssueStatus,
+      startedAt: row.started_at ? new Date(row.started_at) : null,
+      completedAt: row.completed_at ? new Date(row.completed_at) : null,
+      costUsd: row.cost_usd,
+      error: row.error,
+    };
+  }
+
   // ============ Private Helpers ============
 
   private rowToIssue(row: IssueRow): Issue {
@@ -729,4 +1028,67 @@ interface WorkRecordRow {
   attempts: number;
   last_attempt_at: string;
   total_cost_usd: number;
+}
+
+// Parallel session types (Phase 5)
+export type ParallelSessionStatus = "active" | "completed" | "failed" | "cancelled";
+export type ParallelSessionIssueStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface ParallelSession {
+  id: string;
+  startedAt: Date;
+  completedAt: Date | null;
+  status: ParallelSessionStatus;
+  totalIssues: number;
+  completedIssues: number;
+  failedIssues: number;
+  cancelledIssues: number;
+  maxConcurrent: number;
+  totalCostUsd: number;
+  totalDurationMs: number;
+}
+
+export interface ParallelSessionIssue {
+  id: number;
+  parallelSessionId: string;
+  issueUrl: string;
+  issueId: string | null;
+  sessionId: string | null;
+  status: ParallelSessionIssueStatus;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  costUsd: number;
+  error: string | null;
+}
+
+interface ParallelSessionRow {
+  id: string;
+  started_at: string;
+  completed_at: string | null;
+  status: string;
+  total_issues: number;
+  completed_issues: number;
+  failed_issues: number;
+  cancelled_issues: number;
+  max_concurrent: number;
+  total_cost_usd: number;
+  total_duration_ms: number;
+}
+
+interface ParallelSessionIssueRow {
+  id: number;
+  parallel_session_id: string;
+  issue_url: string;
+  issue_id: string | null;
+  session_id: string | null;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  cost_usd: number;
+  error: string | null;
 }

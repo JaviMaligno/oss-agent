@@ -291,4 +291,213 @@ describe.skipIf(SKIP_SQLITE_TESTS)("StateManager", () => {
       expect(stats.issuesByState.merged).toBe(1);
     });
   });
+
+  describe("Parallel Session Management", () => {
+    it("should create and retrieve a parallel session", () => {
+      const session = stateManager.createParallelSession({
+        issueUrls: [
+          "https://github.com/owner/repo/issues/1",
+          "https://github.com/owner/repo/issues/2",
+        ],
+        maxConcurrent: 2,
+      });
+
+      expect(session.id).toMatch(/^ps-\d+-/);
+      expect(session.totalIssues).toBe(2);
+      expect(session.maxConcurrent).toBe(2);
+      expect(session.status).toBe("active");
+      expect(session.completedIssues).toBe(0);
+      expect(session.failedIssues).toBe(0);
+
+      const retrieved = stateManager.getParallelSession(session.id);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.id).toBe(session.id);
+    });
+
+    it("should return null for non-existent parallel session", () => {
+      const session = stateManager.getParallelSession("non-existent");
+      expect(session).toBeNull();
+    });
+
+    it("should get active parallel sessions", () => {
+      stateManager.createParallelSession({
+        issueUrls: ["https://github.com/owner/repo/issues/1"],
+        maxConcurrent: 1,
+      });
+
+      const session2 = stateManager.createParallelSession({
+        issueUrls: ["https://github.com/owner/repo/issues/2"],
+        maxConcurrent: 1,
+      });
+
+      // Complete one session
+      stateManager.updateParallelSession(session2.id, { status: "completed" });
+
+      const active = stateManager.getActiveParallelSessions();
+      expect(active).toHaveLength(1);
+    });
+
+    it("should get all parallel sessions with limit", () => {
+      for (let i = 0; i < 5; i++) {
+        stateManager.createParallelSession({
+          issueUrls: [`https://github.com/owner/repo/issues/${i}`],
+          maxConcurrent: 1,
+        });
+      }
+
+      const limited = stateManager.getAllParallelSessions(3);
+      expect(limited).toHaveLength(3);
+
+      const all = stateManager.getAllParallelSessions(10);
+      expect(all).toHaveLength(5);
+    });
+
+    it("should update parallel session", () => {
+      const session = stateManager.createParallelSession({
+        issueUrls: [
+          "https://github.com/owner/repo/issues/1",
+          "https://github.com/owner/repo/issues/2",
+        ],
+        maxConcurrent: 2,
+      });
+
+      stateManager.updateParallelSession(session.id, {
+        status: "completed",
+        completedIssues: 1,
+        failedIssues: 1,
+        totalCostUsd: 0.15,
+        totalDurationMs: 5000,
+      });
+
+      const updated = stateManager.getParallelSession(session.id);
+      expect(updated?.status).toBe("completed");
+      expect(updated?.completedIssues).toBe(1);
+      expect(updated?.failedIssues).toBe(1);
+      expect(updated?.totalCostUsd).toBeCloseTo(0.15);
+      expect(updated?.totalDurationMs).toBe(5000);
+      expect(updated?.completedAt).not.toBeNull();
+    });
+
+    it("should create parallel session issues", () => {
+      const session = stateManager.createParallelSession({
+        issueUrls: [
+          "https://github.com/owner/repo/issues/1",
+          "https://github.com/owner/repo/issues/2",
+        ],
+        maxConcurrent: 2,
+      });
+
+      const issues = stateManager.getParallelSessionIssues(session.id);
+      expect(issues).toHaveLength(2);
+      expect(issues[0]?.issueUrl).toBe("https://github.com/owner/repo/issues/1");
+      expect(issues[0]?.status).toBe("pending");
+      expect(issues[1]?.issueUrl).toBe("https://github.com/owner/repo/issues/2");
+    });
+
+    it("should update parallel session issue", () => {
+      // First create an issue that will be referenced
+      const issue = createIssueInDb({
+        id: "owner/repo#100",
+        url: "https://github.com/owner/repo/issues/100",
+      });
+
+      // Create a session for the issue (needed for FK constraint)
+      const workSession = stateManager.createSession({
+        issueId: issue.id,
+        issueUrl: issue.url,
+        status: "active",
+        provider: "claude-cli",
+        model: "claude-sonnet-4-20250514",
+        startedAt: new Date(),
+        lastActivityAt: new Date(),
+        completedAt: null,
+        turnCount: 0,
+        costUsd: 0,
+        prUrl: null,
+        workingDirectory: "/tmp/work",
+        canResume: true,
+        error: null,
+      });
+
+      const session = stateManager.createParallelSession({
+        issueUrls: ["https://github.com/owner/repo/issues/100"],
+        maxConcurrent: 1,
+      });
+
+      stateManager.updateParallelSessionIssue(
+        session.id,
+        "https://github.com/owner/repo/issues/100",
+        {
+          status: "in_progress",
+        }
+      );
+
+      let issues = stateManager.getParallelSessionIssues(session.id);
+      expect(issues[0]?.status).toBe("in_progress");
+      expect(issues[0]?.startedAt).not.toBeNull();
+
+      stateManager.updateParallelSessionIssue(
+        session.id,
+        "https://github.com/owner/repo/issues/100",
+        {
+          status: "completed",
+          costUsd: 0.05,
+          sessionId: workSession.id,
+        }
+      );
+
+      issues = stateManager.getParallelSessionIssues(session.id);
+      expect(issues[0]?.status).toBe("completed");
+      expect(issues[0]?.completedAt).not.toBeNull();
+      expect(issues[0]?.costUsd).toBeCloseTo(0.05);
+      expect(issues[0]?.sessionId).toBe(workSession.id);
+    });
+
+    it("should update parallel session issue with error", () => {
+      const session = stateManager.createParallelSession({
+        issueUrls: ["https://github.com/owner/repo/issues/1"],
+        maxConcurrent: 1,
+      });
+
+      stateManager.updateParallelSessionIssue(
+        session.id,
+        "https://github.com/owner/repo/issues/1",
+        {
+          status: "failed",
+          error: "Something went wrong",
+        }
+      );
+
+      const issues = stateManager.getParallelSessionIssues(session.id);
+      expect(issues[0]?.status).toBe("failed");
+      expect(issues[0]?.error).toBe("Something went wrong");
+    });
+
+    it("should handle cancelled issues", () => {
+      const session = stateManager.createParallelSession({
+        issueUrls: [
+          "https://github.com/owner/repo/issues/1",
+          "https://github.com/owner/repo/issues/2",
+        ],
+        maxConcurrent: 2,
+      });
+
+      stateManager.updateParallelSessionIssue(
+        session.id,
+        "https://github.com/owner/repo/issues/1",
+        { status: "cancelled" }
+      );
+
+      stateManager.updateParallelSession(session.id, {
+        cancelledIssues: 1,
+      });
+
+      const updated = stateManager.getParallelSession(session.id);
+      expect(updated?.cancelledIssues).toBe(1);
+
+      const issues = stateManager.getParallelSessionIssues(session.id);
+      const cancelled = issues.find((i) => i.issueUrl === "https://github.com/owner/repo/issues/1");
+      expect(cancelled?.status).toBe("cancelled");
+    });
+  });
 });

@@ -32,6 +32,12 @@ export const GitConfigSchema = z.object({
   defaultBranch: z.string().default("main"),
   commitSignoff: z.boolean().default(false),
   branchPrefix: z.string().default("oss-agent"),
+  // How to handle existing branches when starting work on an issue
+  // - "auto-clean": Delete existing branch and start fresh (default)
+  // - "reuse": Reuse existing branch if found
+  // - "suffix": Create a new branch with numeric suffix (e.g., branch-2, branch-3)
+  // - "fail": Fail if branch already exists
+  existingBranchStrategy: z.enum(["auto-clean", "reuse", "suffix", "fail"]).default("auto-clean"),
 });
 
 export const QualityGatesSchema = z.object({
@@ -83,11 +89,27 @@ export const LoggingConfigSchema = z.object({
   consoleLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
+export const ParallelConfigSchema = z.object({
+  // Maximum concurrent agents (global limit)
+  maxConcurrentAgents: z.number().int().positive().default(3),
+  // Maximum concurrent agents per project
+  maxConcurrentPerProject: z.number().int().positive().default(2),
+  // Maximum total worktrees to maintain
+  maxWorktrees: z.number().int().positive().default(10),
+  // Maximum worktrees per project
+  maxWorktreesPerProject: z.number().int().positive().default(5),
+  // Auto-cleanup completed worktrees after N hours
+  autoCleanupHours: z.number().int().positive().default(24),
+  // Enable conflict detection between parallel issues
+  enableConflictDetection: z.boolean().default(true),
+});
+
 export const ConfigSchema = z.object({
   ai: AIConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
   git: GitConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
+  parallel: ParallelConfigSchema.default({}),
   mode: z.enum(["oss", "b2b"]).default("oss"),
   oss: OSSConfigSchema.optional(),
   b2b: B2BConfigSchema.optional(),
@@ -99,6 +121,7 @@ export type AIConfig = z.infer<typeof AIConfigSchema>;
 export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
 export type GitConfig = z.infer<typeof GitConfigSchema>;
 export type LoggingConfig = z.infer<typeof LoggingConfigSchema>;
+export type ParallelConfig = z.infer<typeof ParallelConfigSchema>;
 export type QualityGates = z.infer<typeof QualityGatesSchema>;
 export type OSSConfig = z.infer<typeof OSSConfigSchema>;
 export type B2BConfig = z.infer<typeof B2BConfigSchema>;
