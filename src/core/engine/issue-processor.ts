@@ -1,7 +1,8 @@
 import { logger } from "../../infra/logger.js";
 import { StateManager } from "../state/state-manager.js";
-import { GitOperations } from "../git/git-operations.js";
+import { GitOperations, CloneResult } from "../git/git-operations.js";
 import { AIProvider, QueryResult } from "../ai/types.js";
+import { RepoService } from "../github/repo-service.js";
 import { Issue, IssueWorkRecord } from "../../types/issue.js";
 import { Session } from "../../types/session.js";
 import { Config } from "../../types/config.js";
@@ -45,12 +46,16 @@ export interface ProcessIssueResult {
  * 7. Update state
  */
 export class IssueProcessor {
+  private repoService: RepoService;
+
   constructor(
     private config: Config,
     private stateManager: StateManager,
     private gitOps: GitOperations,
     private aiProvider: AIProvider
-  ) {}
+  ) {
+    this.repoService = new RepoService();
+  }
 
   /**
    * Process a single issue end-to-end
@@ -107,10 +112,15 @@ export class IssueProcessor {
       issue.state = "queued";
     }
 
-    // Clone repository
-    logger.step(1, 6, "Cloning repository...");
-    const repoUrl = `https://github.com/${owner}/${repo}.git`;
-    const { path: repoPath, defaultBranch } = await this.gitOps.clone(repoUrl, owner, repo);
+    // Check permissions and setup repository (with fork if needed)
+    logger.step(1, 6, "Setting up repository...");
+    const cloneResult = await this.setupRepository(owner, repo);
+
+    const { path: repoPath, defaultBranch, pushRemote, pushOwner, isFork } = cloneResult;
+
+    if (isFork) {
+      logger.info(`Using fork workflow - will push to ${pushOwner}'s fork`);
+    }
 
     // Create branch for this issue
     logger.step(2, 6, "Creating branch...");
@@ -274,15 +284,22 @@ export class IssueProcessor {
     const commitMessage = this.buildCommitMessage(issueNumber, issueData.title);
     await this.gitOps.commit(worktreePath, commitMessage);
 
-    // Push branch
+    // Push branch (to fork remote if using fork workflow)
     logger.step(6, 6, "Pushing branch...");
-    await this.gitOps.push(worktreePath, branchName);
+    await this.gitOps.push(worktreePath, branchName, { remote: pushRemote });
 
     // Create PR (if not skipped)
     let prUrl: string | undefined;
     if (!options.skipPR) {
       logger.info("Creating pull request...");
-      prUrl = await this.createPullRequest(owner, repo, branchName, issueData, defaultBranch);
+      prUrl = await this.createPullRequest(
+        owner,
+        repo,
+        branchName,
+        issueData,
+        defaultBranch,
+        isFork ? pushOwner : undefined
+      );
 
       this.stateManager.updateSessionMetrics(session.id, { prUrl });
       this.stateManager.transitionIssue(issue.id, "pr_created", `PR created: ${prUrl}`, session.id);
@@ -522,6 +539,33 @@ Changes prepared with assistance from OSS-Agent`;
   }
 
   /**
+   * Setup repository with fork support
+   * Checks if user has push access, forks if needed
+   */
+  private async setupRepository(owner: string, repo: string): Promise<CloneResult> {
+    const repoUrl = `https://github.com/${owner}/${repo}.git`;
+
+    // Check if user has push access to the repository
+    logger.debug(`Checking permissions for ${owner}/${repo}...`);
+    const permissions = await this.repoService.checkPermissions(owner, repo);
+
+    if (permissions.canPush) {
+      logger.debug(`User has push access to ${owner}/${repo}`);
+      return this.gitOps.clone(repoUrl, owner, repo);
+    }
+
+    // No push access - need to use fork workflow
+    logger.info(`No push access to ${owner}/${repo}, setting up fork...`);
+
+    // Fork the repository (or get existing fork)
+    const { fork } = await this.repoService.forkRepo(owner, repo);
+    const forkUrl = `https://github.com/${fork.owner}/${fork.name}.git`;
+
+    // Clone with fork support
+    return this.gitOps.cloneWithFork(repoUrl, owner, repo, fork.owner, forkUrl);
+  }
+
+  /**
    * Create a pull request
    */
   private async createPullRequest(
@@ -529,7 +573,8 @@ Changes prepared with assistance from OSS-Agent`;
     repo: string,
     branchName: string,
     issueData: { title: string; body: string },
-    baseBranch: string
+    baseBranch: string,
+    forkOwner?: string
   ): Promise<string> {
     const { spawn } = await import("node:child_process");
 
@@ -549,6 +594,9 @@ ${issueData.body ? issueData.body.slice(0, 1000) : "No description provided."}
 ---
 🤖 Changes prepared with assistance from OSS-Agent`;
 
+    // For fork-based PRs, head needs to be "forkOwner:branchName"
+    const headRef = forkOwner ? `${forkOwner}:${branchName}` : branchName;
+
     return new Promise((resolve, reject) => {
       const proc = spawn("gh", [
         "pr",
@@ -556,7 +604,7 @@ ${issueData.body ? issueData.body.slice(0, 1000) : "No description provided."}
         "--repo",
         `${owner}/${repo}`,
         "--head",
-        branchName,
+        headRef,
         "--base",
         baseBranch,
         "--title",

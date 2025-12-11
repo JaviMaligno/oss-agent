@@ -11,6 +11,9 @@ import {
   createStatusCommand,
   createConfigCommand,
   createCleanupCommand,
+  createDiscoverCommand,
+  createSuggestCommand,
+  createQueueCommand,
 } from "./commands/index.js";
 import { logger } from "../infra/logger.js";
 
@@ -39,23 +42,9 @@ program.addCommand(createResumeCommand());
 program.addCommand(createStatusCommand());
 program.addCommand(createConfigCommand());
 program.addCommand(createCleanupCommand());
-
-// Add placeholder commands for future phases
-program
-  .command("discover")
-  .description("Find projects to contribute to [Phase 4]")
-  .action(() => {
-    console.error(pc.dim("This command will be implemented in Phase 4"));
-    console.error(pc.dim("   See docs/implementation-plan.md for details"));
-  });
-
-program
-  .command("suggest")
-  .description("Suggest issues to work on [Phase 4]")
-  .action(() => {
-    console.error(pc.dim("This command will be implemented in Phase 4"));
-    console.error(pc.dim("   See docs/implementation-plan.md for details"));
-  });
+program.addCommand(createDiscoverCommand());
+program.addCommand(createSuggestCommand());
+program.addCommand(createQueueCommand());
 
 // Error handling
 program.exitOverride((err) => {

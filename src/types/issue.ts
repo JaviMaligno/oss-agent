@@ -78,3 +78,32 @@ export interface IssueScore {
     prStatusScore: number;
   };
 }
+
+/** Comment on an issue */
+export interface IssueComment {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: Date;
+}
+
+/** Extended issue info from GitHub (for discovery/selection) */
+export interface GitHubIssueInfo {
+  id: string;
+  url: string;
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  labels: string[];
+  createdAt: Date;
+  updatedAt: Date;
+  author: string;
+  comments: IssueComment[];
+  assignees: string[];
+  repository: {
+    owner: string;
+    name: string;
+    fullName: string;
+  };
+}

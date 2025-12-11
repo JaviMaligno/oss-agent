@@ -28,13 +28,13 @@ The core engine is shared between both modes, with specialized modules for each 
 
 ### Tasks
 
-- [ ] Initialize TypeScript project with strict configuration
-- [ ] Set up ESLint, Prettier, and pre-commit hooks
-- [ ] Configure testing framework (Vitest)
-- [ ] Set up project structure following module-structure.md
-- [ ] Create basic CLI skeleton with Commander.js
-- [ ] Set up environment variable handling (dotenv + zod validation)
-- [ ] Initialize git repository with conventional commits
+- [x] Initialize TypeScript project with strict configuration
+- [x] Set up ESLint, Prettier, and pre-commit hooks
+- [x] Configure testing framework (Vitest)
+- [x] Set up project structure following module-structure.md
+- [x] Create basic CLI skeleton with Commander.js
+- [x] Set up environment variable handling (dotenv + zod validation)
+- [x] Initialize git repository with conventional commits
 
 ### Deliverables
 
@@ -76,37 +76,38 @@ oss-agent/
 
 #### 1.1 AI Provider Abstraction
 
-- [ ] Define `AIProvider` interface
-- [ ] Implement `ClaudeProvider` using Claude Agent SDK
-- [ ] Basic prompt construction for code tasks
-- [ ] Cost tracking per query
+- [x] Define `AIProvider` interface
+- [x] Implement `ClaudeCLIProvider` using Claude CLI (`--print` mode)
+- [x] Basic prompt construction for code tasks
+- [x] Cost tracking per query (partial - turns tracked, cost not reported by CLI)
 
 #### 1.2 Git Operations Manager
 
-- [ ] Clone/fetch repository
-- [ ] Branch creation with naming conventions
-- [ ] Commit with conventional commit format
-- [ ] Basic conflict detection
+- [x] Clone/fetch repository
+- [x] Branch creation with naming conventions
+- [x] Commit with conventional commit format
+- [x] Git worktree support for isolated work
+- [x] Fork detection and auto-forking for upstream repos
 
 #### 1.3 Contribution Engine (MVP)
 
-- [ ] Issue parsing (extract title, body, labels from URL)
-- [ ] Context gathering (read relevant files, CONTRIBUTING.md)
-- [ ] Implementation prompt generation
-- [ ] Code modification execution
-- [ ] Basic test running (detect and run test command)
+- [x] Issue parsing (extract title, body, labels from URL)
+- [x] Implementation prompt generation
+- [x] Code modification execution via Claude CLI
+- [x] Quality gates (max files, max lines changed)
 
 #### 1.4 PR Creation
 
-- [ ] Generate PR title and description from issue
-- [ ] Create PR via GitHub CLI (`gh`)
-- [ ] Link PR to issue
+- [x] Generate PR title and description from issue
+- [x] Create PR via GitHub CLI (`gh`)
+- [x] Link PR to issue
+- [x] Fork-based PR creation (user:branch format)
 
 #### 1.5 CLI Commands (Phase 1)
 
-- [ ] `oss-agent work <issue-url>` - Full flow for single issue
-- [ ] `oss-agent config` - Set API keys, preferences
-- [ ] Basic progress output during execution
+- [x] `oss-agent work <issue-url>` - Full flow for single issue
+- [x] `oss-agent config` - View/edit configuration
+- [x] Basic progress output during execution (step indicators)
 
 ### Deliverables
 
@@ -144,29 +145,30 @@ That:
 
 #### 2.1 State Persistence
 
-- [ ] Choose storage (SQLite via better-sqlite3 for simplicity)
-- [ ] Define schema: projects, issues, sessions, audit_log
-- [ ] Implement StateManager class
-- [ ] Track issue state transitions
+- [x] Choose storage (SQLite via better-sqlite3 for simplicity)
+- [x] Define schema: projects, issues, sessions, issue_transitions, issue_work_records
+- [x] Implement StateManager class
+- [x] Track issue state transitions with full audit trail
 
 #### 2.2 Budget Manager
 
-- [ ] Per-issue budget limits
-- [ ] Daily/monthly budget tracking
+- [x] Per-issue budget limits (via config)
+- [x] Budget configuration in config file
+- [ ] Daily/monthly budget tracking (partial)
 - [ ] Hard stop at budget threshold
-- [ ] Budget status reporting
 
 #### 2.3 Session Management
 
-- [ ] Save session state for resume capability
-- [ ] Session history and cost breakdown
-- [ ] Clean up old sessions
+- [x] Save session state for resume capability
+- [x] Session history and cost breakdown
+- [x] Work records tracking (branch, worktree, PR)
 
 #### 2.4 CLI Commands (Phase 2)
 
-- [ ] `oss-agent status` - Show current state, budget usage
-- [ ] `oss-agent history` - List past operations
-- [ ] `oss-agent resume <session-id>` - Resume interrupted work
+- [x] `oss-agent status` - Show current state, active sessions
+- [x] `oss-agent history` - List past operations
+- [x] `oss-agent resume <session-id>` - Resume interrupted work
+- [x] `oss-agent cleanup` - Clean up completed/failed worktrees
 
 ### Deliverables
 
@@ -203,23 +205,23 @@ That:
 
 #### 3.2 Feedback Monitor Service
 
+- [x] Feedback parser for PR comments (FeedbackParser class)
+- [x] Classify feedback type (approval, changes_requested, comment, automated)
+- [x] Detect automated feedback (Sourcery, CodeRabbit, dependabot, etc.)
 - [ ] PR polling mechanism (GitHub API via `gh`)
-- [ ] Detect new comments (human and bot)
-- [ ] Classify feedback type (approval, changes requested, comment)
-- [ ] Detect automated feedback (Sourcery, CodeRabbit, etc.)
 
 #### 3.3 Feedback Response Engine
 
 - [ ] Parse feedback into actionable items
 - [ ] Generate fix prompt from feedback
 - [ ] Apply fixes and push
-- [ ] Iteration limits and guards
+- [x] Iteration limits and guards (via config maxIterations)
 
 #### 3.4 CLI Commands (Phase 3)
 
-- [ ] `oss-agent watch` - Start feedback monitor
+- [x] `oss-agent watch` - Start feedback monitor (placeholder)
+- [x] `oss-agent iterate <pr-url>` - Process PR feedback and iterate
 - [ ] `oss-agent prs` - List PRs being monitored
-- [ ] `oss-agent respond <pr-url>` - Manually trigger feedback response
 
 ### Deliverables
 
@@ -247,31 +249,48 @@ That:
 
 ### Tasks
 
-#### 4.1 Project Discovery Service
+#### 4.1 Project Discovery Service ✅
 
-- [ ] Direct mode: Work with explicit repo list
-- [ ] Search mode: GitHub search by criteria (language, stars, topics)
-- [ ] Project health scoring (response time, merge rate, activity)
-- [ ] Automated feedback tool detection
+- [x] Direct mode: Work with explicit repo list
+- [x] Search mode: GitHub search by criteria (language, stars, topics)
+- [x] Project health scoring (response time, merge rate, activity)
+- [x] Automated feedback tool detection
 
-#### 4.2 Issue Selection Service
+#### 4.2 Issue Selection Service ✅
 
-- [ ] Filter modes: unassigned_no_pr, all_open, custom
-- [ ] Issue scoring algorithm
-- [ ] "Good first issue" prioritization
+- [x] Filter modes: unassigned_no_pr, all_open, custom
+- [x] Issue scoring algorithm
+- [x] "Good first issue" prioritization
 - [ ] Conflict detection (issues that might touch same files)
 
-#### 4.3 Queue Management
+#### 4.3 Fork Management ✅
 
-- [ ] Issue queue with priorities
+- [x] RepoService for GitHub operations (checkPermissions, forkRepo, getCurrentUser)
+- [x] Automatic fork detection (check push permissions)
+- [x] Auto-forking when user lacks push access
+- [x] Clone with fork support (upstream + fork remotes)
+- [x] Push to fork remote
+- [x] PR creation with fork owner prefix (user:branch)
+
+#### 4.4 Queue Management
+
+- [x] Issue queue with priorities (queue command with prioritize subcommand)
 - [ ] Rate limiting (max PRs per project per day)
 - [ ] Automatic queue replenishment
 
-#### 4.4 CLI Commands (Phase 4)
+#### 4.5 Discovery Filters & Modes
 
-- [ ] `oss-agent discover` - Find projects matching criteria
-- [ ] `oss-agent suggest` - Suggest issues to work on
-- [ ] `oss-agent queue` - Show/manage issue queue
+- [x] Domain categories (ai-ml, cybersecurity, devtools, frontend, backend, etc.)
+- [x] Framework filter (pytorch, fastapi, react, etc.)
+- [x] Curated list parsing (awesome-* lists)
+- [x] Enhanced automated feedback tool detection (13+ tools)
+- [x] Intelligent mode with AI agent (natural language queries via --intelligent --query)
+
+#### 4.6 CLI Commands (Phase 4)
+
+- [x] `oss-agent discover` - Find projects matching criteria
+- [x] `oss-agent suggest` - Suggest issues to work on
+- [x] `oss-agent queue` - Show/manage issue queue (list, add, skip, prioritize, clear)
 - [ ] `oss-agent run` - Autonomous mode (work through queue)
 
 ### Deliverables

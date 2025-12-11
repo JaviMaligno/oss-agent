@@ -129,7 +129,8 @@ export class StateManager {
         last_attempt_at TEXT DEFAULT CURRENT_TIMESTAMP,
         total_cost_usd REAL DEFAULT 0,
         FOREIGN KEY (issue_id) REFERENCES issues(id),
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
+        FOREIGN KEY (session_id) REFERENCES sessions(id),
+        UNIQUE(issue_id, session_id)
       );
 
       -- Indexes for common queries

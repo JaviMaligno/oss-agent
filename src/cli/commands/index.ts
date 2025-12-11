@@ -6,3 +6,6 @@ export { createResumeCommand } from "./resume.js";
 export { createStatusCommand } from "./status.js";
 export { createConfigCommand } from "./config.js";
 export { createCleanupCommand } from "./cleanup.js";
+export { createDiscoverCommand } from "./discover.js";
+export { createSuggestCommand } from "./suggest.js";
+export { createQueueCommand } from "./queue.js";

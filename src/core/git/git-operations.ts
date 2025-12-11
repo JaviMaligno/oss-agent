@@ -8,6 +8,12 @@ import { GitConfig } from "../../types/config.js";
 export interface CloneResult {
   path: string;
   defaultBranch: string;
+  /** The remote to push to (origin for direct, fork for fork-based) */
+  pushRemote: string;
+  /** The owner of the push remote (may be different from upstream) */
+  pushOwner: string;
+  /** Whether this is using a fork */
+  isFork: boolean;
 }
 
 export interface BranchResult {
@@ -53,6 +59,7 @@ export class GitOperations {
 
   /**
    * Clone a repository (or use existing clone)
+   * For fork-based workflow, use cloneWithFork instead.
    */
   async clone(repoUrl: string, owner: string, name: string): Promise<CloneResult> {
     const repoPath = join(this.reposDir, owner, name);
@@ -62,7 +69,13 @@ export class GitOperations {
       // Fetch latest changes
       await this.git(["fetch", "--all"], { cwd: repoPath });
       const defaultBranch = await this.getDefaultBranch(repoPath);
-      return { path: repoPath, defaultBranch };
+      return {
+        path: repoPath,
+        defaultBranch,
+        pushRemote: "origin",
+        pushOwner: owner,
+        isFork: false,
+      };
     }
 
     // Ensure owner directory exists
@@ -75,7 +88,74 @@ export class GitOperations {
     await this.git(["clone", repoUrl, repoPath]);
 
     const defaultBranch = await this.getDefaultBranch(repoPath);
-    return { path: repoPath, defaultBranch };
+    return {
+      path: repoPath,
+      defaultBranch,
+      pushRemote: "origin",
+      pushOwner: owner,
+      isFork: false,
+    };
+  }
+
+  /**
+   * Clone a repository with fork support for contributing to upstream repos.
+   * If the user doesn't have push access, creates/uses a fork.
+   */
+  async cloneWithFork(
+    repoUrl: string,
+    owner: string,
+    name: string,
+    forkOwner: string,
+    forkUrl: string
+  ): Promise<CloneResult> {
+    const repoPath = join(this.reposDir, owner, name);
+
+    if (existsSync(repoPath)) {
+      logger.debug(`Repository already exists: ${repoPath}`);
+      // Fetch latest changes from all remotes
+      await this.git(["fetch", "--all"], { cwd: repoPath });
+
+      // Ensure fork remote exists
+      const remotes = await this.git(["remote"], { cwd: repoPath });
+      if (!remotes.includes("fork")) {
+        logger.info(`Adding fork remote: ${forkUrl}`);
+        await this.git(["remote", "add", "fork", forkUrl], { cwd: repoPath });
+        await this.git(["fetch", "fork"], { cwd: repoPath });
+      }
+
+      const defaultBranch = await this.getDefaultBranch(repoPath);
+      return {
+        path: repoPath,
+        defaultBranch,
+        pushRemote: "fork",
+        pushOwner: forkOwner,
+        isFork: true,
+      };
+    }
+
+    // Ensure owner directory exists
+    const ownerDir = join(this.reposDir, owner);
+    if (!existsSync(ownerDir)) {
+      mkdirSync(ownerDir, { recursive: true });
+    }
+
+    // Clone the upstream repository
+    logger.info(`Cloning ${repoUrl} to ${repoPath}`);
+    await this.git(["clone", repoUrl, repoPath]);
+
+    // Add fork as a separate remote
+    logger.info(`Adding fork remote: ${forkUrl}`);
+    await this.git(["remote", "add", "fork", forkUrl], { cwd: repoPath });
+    await this.git(["fetch", "fork"], { cwd: repoPath });
+
+    const defaultBranch = await this.getDefaultBranch(repoPath);
+    return {
+      path: repoPath,
+      defaultBranch,
+      pushRemote: "fork",
+      pushOwner: forkOwner,
+      isFork: true,
+    };
   }
 
   /**
@@ -184,8 +264,9 @@ export class GitOperations {
   async push(
     cwd: string,
     branchName: string,
-    options: { force?: boolean; setUpstream?: boolean } = {}
+    options: { force?: boolean; setUpstream?: boolean; remote?: string } = {}
   ): Promise<PushResult> {
+    const remote = options.remote ?? "origin";
     const pushArgs = ["push"];
 
     if (options.setUpstream ?? true) {
@@ -195,7 +276,7 @@ export class GitOperations {
       pushArgs.push("--force-with-lease");
     }
 
-    pushArgs.push("origin", branchName);
+    pushArgs.push(remote, branchName);
 
     await this.git(pushArgs, { cwd });
     logger.info(`Pushed branch: ${branchName}`);

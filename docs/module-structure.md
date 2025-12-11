@@ -45,144 +45,104 @@ This document defines the modular architecture of the OSS Contribution Agent. Th
 
 ## Directory Structure
 
+### Current Implementation (as of Phase 4)
+
 ```
 src/
-├── index.ts                    # Main entry point
 ├── cli/                        # CLI commands and configuration
 │   ├── index.ts               # CLI setup (Commander.js)
-│   ├── commands/
-│   │   ├── work.ts            # oss-agent work <issue-url>
-│   │   ├── status.ts          # oss-agent status
-│   │   ├── config.ts          # oss-agent config
-│   │   ├── history.ts         # oss-agent history
-│   │   ├── resume.ts          # oss-agent resume <session>
-│   │   ├── oss/               # OSS-specific commands
-│   │   │   ├── discover.ts    # oss-agent discover
-│   │   │   ├── suggest.ts     # oss-agent suggest
-│   │   │   ├── queue.ts       # oss-agent queue
-│   │   │   └── run.ts         # oss-agent run (autonomous)
-│   │   └── b2b/               # B2B-specific commands
-│   │       ├── campaign.ts    # oss-agent campaign
-│   │       └── report.ts      # oss-agent report
-│   └── config/
-│       ├── schema.ts          # Config schema (zod)
-│       └── loader.ts          # Load from file/env
+│   ├── config/
+│   │   ├── index.ts           # Config exports
+│   │   └── loader.ts          # Config loading and validation
+│   └── commands/
+│       ├── index.ts           # Command exports
+│       ├── work.ts            # oss-agent work <issue-url>
+│       ├── iterate.ts         # oss-agent iterate <pr-url>
+│       ├── watch.ts           # oss-agent watch (placeholder)
+│       ├── status.ts          # oss-agent status
+│       ├── config.ts          # oss-agent config
+│       ├── history.ts         # oss-agent history
+│       ├── resume.ts          # oss-agent resume <session>
+│       ├── cleanup.ts         # oss-agent cleanup
+│       ├── discover.ts        # oss-agent discover (Phase 4)
+│       └── suggest.ts         # oss-agent suggest (Phase 4)
 │
 ├── core/                       # Shared core modules
-│   ├── index.ts               # Core exports
-│   ├── engine/                # Contribution Engine
-│   │   ├── index.ts
-│   │   ├── contribution-engine.ts
-│   │   ├── issue-parser.ts
-│   │   ├── context-gatherer.ts
-│   │   ├── prompt-builder.ts
-│   │   └── types.ts
-│   ├── git/                   # Git operations
-│   │   ├── index.ts
-│   │   ├── git-manager.ts
-│   │   ├── worktree-manager.ts
-│   │   ├── branch-naming.ts
-│   │   └── types.ts
 │   ├── ai/                    # AI Provider abstraction
-│   │   ├── index.ts
-│   │   ├── provider.ts        # AIProvider interface
-│   │   ├── claude-provider.ts # Claude Agent SDK implementation
-│   │   ├── cost-tracker.ts
-│   │   └── types.ts
-│   ├── feedback/              # Feedback loop
-│   │   ├── index.ts
-│   │   ├── monitor.ts         # PR monitoring
-│   │   ├── classifier.ts      # Feedback classification
-│   │   ├── responder.ts       # Generate responses
-│   │   └── types.ts
-│   ├── state/                 # State persistence
-│   │   ├── index.ts
-│   │   ├── state-manager.ts
-│   │   ├── database.ts        # SQLite wrapper
-│   │   ├── migrations/        # Schema migrations
-│   │   └── types.ts
-│   ├── budget/                # Budget management
-│   │   ├── index.ts
-│   │   ├── budget-manager.ts
-│   │   └── types.ts
-│   ├── queue/                 # Work queue
-│   │   ├── index.ts
-│   │   ├── queue-manager.ts
-│   │   └── types.ts
-│   └── hooks/                 # Claude Code hooks
-│       ├── index.ts
-│       ├── templates/         # Hook script templates
-│       │   ├── on-session-stop.sh
-│       │   ├── on-session-start.sh
-│       │   └── on-pr-created.sh
-│       └── installer.ts       # Install hooks to project
+│   │   ├── types.ts           # AIProvider interface, QueryOptions, etc.
+│   │   ├── claude-cli-provider.ts  # Claude CLI implementation
+│   │   └── provider-factory.ts     # Provider factory
+│   │
+│   ├── engine/                # Issue Processing Engine
+│   │   └── issue-processor.ts # Main orchestration (clone→AI→commit→PR)
+│   │
+│   ├── feedback/              # PR Feedback handling
+│   │   └── feedback-parser.ts # Parse and classify PR comments
+│   │
+│   ├── git/                   # Git operations
+│   │   └── git-operations.ts  # Clone, branch, commit, push, worktree
+│   │
+│   ├── github/                # GitHub API operations
+│   │   └── repo-service.ts    # Fork management, permissions
+│   │
+│   └── state/                 # State persistence
+│       └── state-manager.ts   # SQLite-based state (issues, sessions, etc.)
 │
-├── oss/                        # OSS-specific modules
-│   ├── index.ts
+├── oss/                        # OSS-specific modules (Phase 4)
 │   ├── discovery/             # Project discovery
-│   │   ├── index.ts
-│   │   ├── discovery-service.ts
-│   │   ├── modes/
-│   │   │   ├── direct.ts      # Direct repo list
-│   │   │   ├── search.ts      # GitHub search
-│   │   │   └── intelligent.ts # AI-powered discovery
-│   │   ├── scoring.ts         # Project health scoring
-│   │   ├── automated-tools.ts # Detect Sourcery, CodeRabbit, etc.
-│   │   └── types.ts
-│   ├── selection/             # Issue selection
-│   │   ├── index.ts
-│   │   ├── selection-service.ts
-│   │   ├── filters.ts         # unassigned_no_pr, etc.
-│   │   ├── scoring.ts         # Issue scoring
-│   │   ├── conflict-detector.ts
-│   │   └── types.ts
-│   └── quality/               # OSS quality gates
-│       ├── index.ts
-│       ├── gates.ts           # Rate limits, size limits
-│       └── types.ts
-│
-├── b2b/                        # B2B-specific modules
-│   ├── index.ts
-│   ├── integrations/          # External service integrations
-│   │   ├── index.ts
-│   │   ├── jira/
-│   │   │   ├── index.ts
-│   │   │   ├── client.ts
-│   │   │   ├── issue-mapper.ts
-│   │   │   └── types.ts
-│   │   ├── linear/
-│   │   │   ├── index.ts
-│   │   │   └── client.ts
-│   │   ├── sentry/
-│   │   │   ├── index.ts
-│   │   │   └── client.ts
-│   │   └── interface.ts       # Common issue source interface
-│   ├── campaigns/             # Campaign management
-│   │   ├── index.ts
-│   │   ├── campaign-manager.ts
-│   │   ├── campaign-runner.ts
-│   │   └── types.ts
-│   └── reporting/             # Reports and analytics
-│       ├── index.ts
-│       ├── report-generator.ts
-│       ├── templates/
-│       └── types.ts
+│   │   ├── index.ts           # Module exports
+│   │   └── discovery-service.ts # Find and score projects
+│   │
+│   └── selection/             # Issue selection
+│       ├── index.ts           # Module exports
+│       └── selection-service.ts # Find, filter, and score issues
 │
 ├── infra/                      # Infrastructure utilities
-│   ├── index.ts
-│   ├── logger.ts              # Structured logging
-│   ├── errors.ts              # Error types
-│   └── mcp/                   # MCP clients
-│       ├── index.ts
-│       ├── github.ts
-│       └── bitbucket.ts
+│   ├── logger.ts              # Structured logging with colors
+│   └── errors.ts              # Custom error types
 │
 └── types/                      # Shared type definitions
-    ├── index.ts
-    ├── issue.ts               # Common Issue type
-    ├── project.ts             # Common Project type
+    ├── index.ts               # Re-exports
+    ├── issue.ts               # Issue, IssueState, GitHubIssueInfo
+    ├── project.ts             # Project, ProjectScore types
     ├── session.ts             # Session types
-    └── config.ts              # Config types
+    └── config.ts              # Config types with zod schemas
+
+tests/                          # Test files
+├── core/
+│   ├── ai-provider.test.ts    # AI provider tests
+│   ├── feedback-parser.test.ts # Feedback parsing tests
+│   ├── git-operations.test.ts # Git operations tests
+│   └── state-manager.test.ts  # State manager tests
+├── infra/
+│   └── logger.test.ts         # Logger tests
+└── types/
+    └── config.test.ts         # Config validation tests
+```
+
+### Planned Structure (Future Phases)
+
+```
+src/
+├── cli/commands/
+│   ├── oss/                   # OSS-specific commands (Phase 4)
+│   │   ├── discover.ts        # oss-agent discover
+│   │   ├── suggest.ts         # oss-agent suggest
+│   │   ├── queue.ts           # oss-agent queue
+│   │   └── run.ts             # oss-agent run (autonomous)
+│   └── b2b/                   # B2B-specific commands (Phase 6)
+│       ├── campaign.ts        # oss-agent campaign
+│       └── report.ts          # oss-agent report
+│
+├── oss/                        # OSS-specific modules (Phase 4-5)
+│   ├── discovery/             # Project discovery
+│   ├── selection/             # Issue selection
+│   └── quality/               # OSS quality gates
+│
+└── b2b/                        # B2B-specific modules (Phase 6)
+    ├── integrations/          # Jira, Linear, Sentry
+    ├── campaigns/             # Campaign management
+    └── reporting/             # Reports and analytics
 ```
 
 ---
