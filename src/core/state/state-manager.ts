@@ -175,6 +175,28 @@ export class StateManager {
       -- Indexes for parallel sessions
       CREATE INDEX IF NOT EXISTS idx_parallel_sessions_status ON parallel_sessions(status);
       CREATE INDEX IF NOT EXISTS idx_parallel_session_issues_parallel ON parallel_session_issues(parallel_session_id);
+
+      -- Monitored PRs table (Phase 3 - Feedback Loop)
+      CREATE TABLE IF NOT EXISTS monitored_prs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_url TEXT NOT NULL UNIQUE,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        issue_id TEXT,
+        session_id TEXT,
+        state TEXT NOT NULL DEFAULT 'open',
+        last_check_at TEXT,
+        feedback_count INTEGER DEFAULT 0,
+        iteration_count INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (issue_id) REFERENCES issues(id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      -- Index for monitored PRs
+      CREATE INDEX IF NOT EXISTS idx_monitored_prs_state ON monitored_prs(state);
     `);
   }
 
@@ -625,6 +647,264 @@ export class StateManager {
       record.prUrl = row.pr_url;
     }
     return record;
+  }
+
+  // ============ Budget Tracking Methods ============
+
+  /**
+   * Get total cost since a given date
+   */
+  getCostSince(since: Date): number {
+    const result = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(cost_usd), 0) as total
+         FROM sessions
+         WHERE started_at >= ?`
+      )
+      .get(since.toISOString()) as { total: number };
+
+    return result.total;
+  }
+
+  /**
+   * Get today's total cost
+   */
+  getTodaysCost(): number {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return this.getCostSince(today);
+  }
+
+  /**
+   * Get this month's total cost
+   */
+  getMonthsCost(): number {
+    const firstOfMonth = new Date();
+    firstOfMonth.setDate(1);
+    firstOfMonth.setHours(0, 0, 0, 0);
+    return this.getCostSince(firstOfMonth);
+  }
+
+  /**
+   * Get cost breakdown by day for the last N days
+   */
+  getCostBreakdown(days: number = 30): Array<{ date: string; cost: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT DATE(started_at) as date, SUM(cost_usd) as cost
+         FROM sessions
+         WHERE started_at >= DATE('now', '-' || ? || ' days')
+         GROUP BY DATE(started_at)
+         ORDER BY date DESC`
+      )
+      .all(days) as Array<{ date: string; cost: number }>;
+
+    return rows;
+  }
+
+  // ============ Monitored PR Methods (Phase 3) ============
+
+  /**
+   * Register a PR for monitoring
+   */
+  registerMonitoredPR(options: {
+    prUrl: string;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    issueId?: string;
+    sessionId?: string;
+  }): MonitoredPR {
+    const now = new Date();
+
+    this.db
+      .prepare(
+        `INSERT INTO monitored_prs (pr_url, owner, repo, pr_number, issue_id, session_id, state, created_at, updated_at)
+         VALUES (@prUrl, @owner, @repo, @prNumber, @issueId, @sessionId, 'open', @createdAt, @updatedAt)
+         ON CONFLICT(pr_url) DO UPDATE SET
+           issue_id = COALESCE(@issueId, issue_id),
+           session_id = COALESCE(@sessionId, session_id),
+           updated_at = @updatedAt`
+      )
+      .run({
+        prUrl: options.prUrl,
+        owner: options.owner,
+        repo: options.repo,
+        prNumber: options.prNumber,
+        issueId: options.issueId ?? null,
+        sessionId: options.sessionId ?? null,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+
+    logger.debug(`Registered PR for monitoring: ${options.prUrl}`);
+
+    return {
+      id: 0, // Will be set by database
+      prUrl: options.prUrl,
+      owner: options.owner,
+      repo: options.repo,
+      prNumber: options.prNumber,
+      issueId: options.issueId ?? null,
+      sessionId: options.sessionId ?? null,
+      state: "open",
+      lastCheckAt: null,
+      feedbackCount: 0,
+      iterationCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  /**
+   * Get a monitored PR by URL
+   */
+  getMonitoredPR(prUrl: string): MonitoredPR | null {
+    const row = this.db.prepare("SELECT * FROM monitored_prs WHERE pr_url = ?").get(prUrl) as
+      | MonitoredPRRow
+      | undefined;
+
+    return row ? this.rowToMonitoredPR(row) : null;
+  }
+
+  /**
+   * Get all monitored PRs, optionally filtered by state
+   */
+  getMonitoredPRs(state?: MonitoredPRState): MonitoredPR[] {
+    let query = "SELECT * FROM monitored_prs";
+    const params: unknown[] = [];
+
+    if (state) {
+      query += " WHERE state = ?";
+      params.push(state);
+    }
+
+    query += " ORDER BY updated_at DESC";
+
+    const rows = this.db.prepare(query).all(...params) as MonitoredPRRow[];
+    return rows.map((row) => this.rowToMonitoredPR(row));
+  }
+
+  /**
+   * Update a monitored PR
+   */
+  updateMonitoredPR(
+    prUrl: string,
+    updates: Partial<{
+      state: MonitoredPRState;
+      lastCheckAt: Date;
+      feedbackCount: number;
+      iterationCount: number;
+    }>
+  ): void {
+    const setClauses: string[] = ["updated_at = @updatedAt"];
+    const params: Record<string, unknown> = {
+      prUrl,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (updates.state !== undefined) {
+      setClauses.push("state = @state");
+      params.state = updates.state;
+    }
+    if (updates.lastCheckAt !== undefined) {
+      setClauses.push("last_check_at = @lastCheckAt");
+      params.lastCheckAt = updates.lastCheckAt.toISOString();
+    }
+    if (updates.feedbackCount !== undefined) {
+      setClauses.push("feedback_count = @feedbackCount");
+      params.feedbackCount = updates.feedbackCount;
+    }
+    if (updates.iterationCount !== undefined) {
+      setClauses.push("iteration_count = @iterationCount");
+      params.iterationCount = updates.iterationCount;
+    }
+
+    this.db
+      .prepare(`UPDATE monitored_prs SET ${setClauses.join(", ")} WHERE pr_url = @prUrl`)
+      .run(params);
+  }
+
+  /**
+   * Remove a monitored PR
+   */
+  removeMonitoredPR(prUrl: string): void {
+    this.db.prepare("DELETE FROM monitored_prs WHERE pr_url = ?").run(prUrl);
+    logger.debug(`Removed monitored PR: ${prUrl}`);
+  }
+
+  private rowToMonitoredPR(row: MonitoredPRRow): MonitoredPR {
+    return {
+      id: row.id,
+      prUrl: row.pr_url,
+      owner: row.owner,
+      repo: row.repo,
+      prNumber: row.pr_number,
+      issueId: row.issue_id,
+      sessionId: row.session_id,
+      state: row.state as MonitoredPRState,
+      lastCheckAt: row.last_check_at ? new Date(row.last_check_at) : null,
+      feedbackCount: row.feedback_count,
+      iterationCount: row.iteration_count,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
+  }
+
+  // ============ Rate Limiting Methods (Phase 4) ============
+
+  /**
+   * Get PRs created since a given date (for rate limiting)
+   */
+  getPRsCreatedSince(since: Date): Array<{
+    issueId: string;
+    projectId: string;
+    prUrl: string;
+    createdAt: Date;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT i.id as issue_id, i.project_id, i.linked_pr_url as pr_url, t.timestamp as created_at
+         FROM issues i
+         JOIN issue_transitions t ON i.id = t.issue_id
+         WHERE t.to_state = 'pr_created' AND t.timestamp >= ?
+         ORDER BY t.timestamp DESC`
+      )
+      .all(since.toISOString()) as Array<{
+      issue_id: string;
+      project_id: string;
+      pr_url: string | null;
+      created_at: string;
+    }>;
+
+    return rows
+      .filter((row) => row.pr_url !== null)
+      .map((row) => ({
+        issueId: row.issue_id,
+        projectId: row.project_id,
+        prUrl: row.pr_url!,
+        createdAt: new Date(row.created_at),
+      }));
+  }
+
+  /**
+   * Get count of PRs created today, grouped by project
+   */
+  getTodaysPRCounts(): { daily: number; byProject: Record<string, number> } {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const prs = this.getPRsCreatedSince(startOfDay);
+
+    const byProject: Record<string, number> = {};
+    for (const pr of prs) {
+      byProject[pr.projectId] = (byProject[pr.projectId] ?? 0) + 1;
+    }
+
+    return {
+      daily: prs.length,
+      byProject,
+    };
   }
 
   // ============ Statistics ============
@@ -1091,4 +1371,39 @@ interface ParallelSessionIssueRow {
   completed_at: string | null;
   cost_usd: number;
   error: string | null;
+}
+
+// Monitored PR types (Phase 3)
+export type MonitoredPRState = "open" | "merged" | "closed";
+
+export interface MonitoredPR {
+  id: number;
+  prUrl: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  issueId: string | null;
+  sessionId: string | null;
+  state: MonitoredPRState;
+  lastCheckAt: Date | null;
+  feedbackCount: number;
+  iterationCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface MonitoredPRRow {
+  id: number;
+  pr_url: string;
+  owner: string;
+  repo: string;
+  pr_number: number;
+  issue_id: string | null;
+  session_id: string | null;
+  state: string;
+  last_check_at: string | null;
+  feedback_count: number;
+  iteration_count: number;
+  created_at: string;
+  updated_at: string;
 }

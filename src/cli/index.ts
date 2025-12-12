@@ -17,6 +17,9 @@ import {
   createSuggestCommand,
   createQueueCommand,
   createCancelCommand,
+  createPrsCommand,
+  createRunCommand,
+  createInternalCommand,
 } from "./commands/index.js";
 import { logger } from "../infra/logger.js";
 
@@ -51,6 +54,9 @@ program.addCommand(createDiscoverCommand());
 program.addCommand(createSuggestCommand());
 program.addCommand(createQueueCommand());
 program.addCommand(createCancelCommand());
+program.addCommand(createPrsCommand());
+program.addCommand(createRunCommand());
+program.addCommand(createInternalCommand());
 
 // Error handling
 program.exitOverride((err) => {

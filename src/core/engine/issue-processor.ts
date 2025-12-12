@@ -4,6 +4,8 @@ import { StateManager } from "../state/state-manager.js";
 import { GitOperations, CloneResult } from "../git/git-operations.js";
 import { AIProvider, QueryResult } from "../ai/types.js";
 import { RepoService } from "../github/repo-service.js";
+import { RateLimiter } from "./rate-limiter.js";
+import { BudgetManager } from "./budget-manager.js";
 import { Issue, IssueWorkRecord } from "../../types/issue.js";
 import { Session } from "../../types/session.js";
 import { Config } from "../../types/config.js";
@@ -17,6 +19,10 @@ export interface ProcessIssueOptions {
   resume?: boolean;
   /** Skip creating PR (for testing) */
   skipPR?: boolean;
+  /** Skip rate limit check */
+  skipRateLimitCheck?: boolean;
+  /** Skip budget check */
+  skipBudgetCheck?: boolean;
 }
 
 export interface ProcessIssueResult {
@@ -48,6 +54,8 @@ export interface ProcessIssueResult {
  */
 export class IssueProcessor {
   private repoService: RepoService;
+  private rateLimiter: RateLimiter | null = null;
+  private budgetManager: BudgetManager;
 
   constructor(
     private config: Config,
@@ -56,6 +64,12 @@ export class IssueProcessor {
     private aiProvider: AIProvider
   ) {
     this.repoService = new RepoService();
+    // Initialize rate limiter if quality gates are configured
+    if (config.oss?.qualityGates) {
+      this.rateLimiter = new RateLimiter(stateManager, config.oss.qualityGates);
+    }
+    // Initialize budget manager
+    this.budgetManager = new BudgetManager(stateManager, config.budget);
   }
 
   /**
@@ -73,6 +87,33 @@ export class IssueProcessor {
 
     const { owner, repo, issueNumber } = parsed;
     const issueId = `${owner}/${repo}#${issueNumber}`;
+    const projectId = `${owner}/${repo}`;
+
+    // Check rate limits before processing
+    if (this.rateLimiter && !options.skipRateLimitCheck) {
+      const rateLimitStatus = this.rateLimiter.canCreatePR(projectId);
+      if (!rateLimitStatus.allowed) {
+        logger.warn(`Rate limit exceeded: ${rateLimitStatus.reason}`);
+        throw new Error(`Rate limit exceeded: ${rateLimitStatus.reason}`);
+      }
+      logger.debug(
+        `Rate limit check passed: daily=${rateLimitStatus.counts.dailyPRs}/${rateLimitStatus.limits.maxPrsPerDay}, ` +
+          `project=${rateLimitStatus.counts.projectPRs[projectId] ?? 0}/${rateLimitStatus.limits.maxPrsPerProjectPerDay}`
+      );
+    }
+
+    // Check budget limits before processing
+    if (!options.skipBudgetCheck) {
+      const budgetCheck = this.budgetManager.canProceed();
+      if (!budgetCheck.allowed) {
+        logger.warn(`Budget limit exceeded: ${budgetCheck.reason}`);
+        throw new Error(`Budget limit exceeded: ${budgetCheck.reason}`);
+      }
+      logger.debug(
+        `Budget check passed: daily=$${budgetCheck.dailySpent.toFixed(2)}/$${budgetCheck.dailyLimit}, ` +
+          `monthly=$${budgetCheck.monthlySpent.toFixed(2)}/$${budgetCheck.monthlyLimit}`
+      );
+    }
 
     // Check if we have an existing issue record
     let issue = this.stateManager.getIssueByUrl(options.issueUrl);
@@ -180,11 +221,14 @@ export class IssueProcessor {
     let queryResult: QueryResult;
 
     try {
+      // Use effective budget that respects daily/monthly limits
+      const effectiveBudget =
+        options.maxBudgetUsd ?? this.budgetManager.getEffectivePerIssueBudget();
       queryResult = await this.aiProvider.query(prompt, {
         cwd: worktreePath,
         model: this.config.ai.model,
         maxTurns: this.config.ai.cli.maxTurns,
-        maxBudgetUsd: options.maxBudgetUsd ?? this.config.budget.perIssueLimitUsd,
+        maxBudgetUsd: effectiveBudget,
       });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);

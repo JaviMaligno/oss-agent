@@ -6,6 +6,7 @@ import { GitOperations } from "../git/git-operations.js";
 import type { WorktreeManager } from "../git/worktree-manager.js";
 import { AIProvider } from "../ai/types.js";
 import { IssueProcessor, ProcessIssueOptions, ProcessIssueResult } from "./issue-processor.js";
+import { ConflictDetector, PreflightConflictResult } from "./conflict-detector.js";
 
 export interface ParallelWorkOptions {
   /** List of issue URLs to process */
@@ -75,6 +76,7 @@ export class ParallelOrchestrator {
   private cancelled = new Set<string>();
   private cancelAll = false;
   private currentStatus: ParallelStatus | null = null;
+  private conflictDetector: ConflictDetector;
 
   constructor(
     private config: Config,
@@ -85,6 +87,8 @@ export class ParallelOrchestrator {
   ) {
     // WorktreeManager passed for future use (conflict detection, cleanup)
     void _worktreeManager;
+    // Initialize conflict detector
+    this.conflictDetector = new ConflictDetector(stateManager);
   }
 
   /**
@@ -134,10 +138,29 @@ export class ParallelOrchestrator {
     options.onProgress?.(this.currentStatus);
 
     // Run conflict detection if enabled
+    let conflictResult: PreflightConflictResult | null = null;
     if (!options.skipConflictCheck && this.config.parallel.enableConflictDetection) {
       logger.info("Running pre-flight conflict detection...");
-      // Note: Full conflict detection happens after worktrees are created
-      // This is a placeholder for future pre-analysis
+
+      // Fetch issue data for conflict analysis
+      const issuesForAnalysis = await this.fetchIssuesForConflictAnalysis(options.issueUrls);
+      conflictResult = this.conflictDetector.detectPreflightConflicts(issuesForAnalysis);
+
+      if (conflictResult.hasConflicts) {
+        logger.warn(
+          `Pre-flight conflict detection found ${conflictResult.conflictingIssues.length} potential conflicts`
+        );
+        for (const conflict of conflictResult.conflictingIssues) {
+          logger.warn(`  Issue ${conflict.issueUrl} may conflict with:`);
+          for (const overlap of conflict.overlapWith) {
+            logger.warn(`    - ${overlap.issueUrl} (shared: ${overlap.sharedFiles.join(", ")})`);
+          }
+        }
+        // Note: We continue processing but warn about conflicts
+        // In the future, we could skip conflicting issues or process them sequentially
+      } else {
+        logger.info("No conflicts detected, proceeding with parallel processing");
+      }
     }
 
     // Create semaphore for concurrency control
@@ -393,5 +416,64 @@ export class ParallelOrchestrator {
     if (extra?.sessionId !== undefined) dbUpdates.sessionId = extra.sessionId;
 
     this.stateManager.updateParallelSessionIssue(parallelSessionId, issueUrl, dbUpdates);
+  }
+
+  /**
+   * Fetch issue data for conflict analysis
+   */
+  private async fetchIssuesForConflictAnalysis(
+    issueUrls: string[]
+  ): Promise<Array<{ url: string; title: string; body: string }>> {
+    const issues: Array<{ url: string; title: string; body: string }> = [];
+
+    for (const url of issueUrls) {
+      try {
+        // Check if we already have the issue in state
+        const existing = this.stateManager.getIssueByUrl(url);
+        if (existing) {
+          issues.push({
+            url: existing.url,
+            title: existing.title,
+            body: existing.body,
+          });
+          continue;
+        }
+
+        // Fetch from GitHub using gh CLI
+        const parsed = this.parseIssueUrl(url);
+        if (!parsed) continue;
+
+        const { execSync } = await import("node:child_process");
+        const result = execSync(
+          `gh issue view ${parsed.number} --repo ${parsed.owner}/${parsed.repo} --json title,body`,
+          { encoding: "utf-8" }
+        );
+        const data = JSON.parse(result) as { title: string; body: string };
+        issues.push({
+          url,
+          title: data.title,
+          body: data.body,
+        });
+      } catch (error) {
+        logger.debug(`Failed to fetch issue for conflict analysis: ${url} - ${error}`);
+        // Add a placeholder to avoid skipping the issue entirely
+        issues.push({ url, title: "", body: "" });
+      }
+    }
+
+    return issues;
+  }
+
+  /**
+   * Parse issue URL to extract components
+   */
+  private parseIssueUrl(url: string): { owner: string; repo: string; number: number } | null {
+    const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+    if (!match?.[1] || !match?.[2] || !match?.[3]) return null;
+    return {
+      owner: match[1],
+      repo: match[2],
+      number: parseInt(match[3], 10),
+    };
   }
 }

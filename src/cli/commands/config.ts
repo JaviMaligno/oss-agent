@@ -127,6 +127,11 @@ export function createConfigCommand(): Command {
             requireTestsPass: true,
             requireLintPass: true,
           },
+          queue: {
+            minQueueSize: 5,
+            targetQueueSize: 20,
+            autoReplenish: true,
+          },
         },
       });
 

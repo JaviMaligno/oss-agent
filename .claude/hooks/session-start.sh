@@ -1,0 +1,45 @@
+#!/bin/bash
+# oss-agent SessionStart hook
+# Injects PR feedback context when resuming sessions
+#
+# This hook is called when Claude Code starts a new session.
+# It checks if there's an active oss-agent session with a PR
+# and injects any pending feedback as context.
+
+set -e
+
+# Configuration
+OSS_AGENT_BIN="${OSS_AGENT_BIN:-node dist/cli/index.js}"
+OSS_AGENT_DATA_DIR="${OSS_AGENT_DATA_DIR:-~/.oss-agent}"
+
+# Read input JSON from stdin (contains session_id, transcript_path)
+INPUT=$(cat)
+
+# Try to get session context from oss-agent
+CONTEXT=$("$OSS_AGENT_BIN" internal get-session-context --json 2>/dev/null || echo '{"hasContext":false}')
+
+# Parse the result
+HAS_CONTEXT=$(echo "$CONTEXT" | jq -r '.hasContext // false')
+
+if [ "$HAS_CONTEXT" = "true" ]; then
+  # Extract the context to inject
+  FEEDBACK_CONTEXT=$(echo "$CONTEXT" | jq -r '.context // empty')
+  PR_URL=$(echo "$CONTEXT" | jq -r '.prUrl // empty')
+  FEEDBACK_COUNT=$(echo "$CONTEXT" | jq -r '.feedbackCount // 0')
+
+  if [ -n "$FEEDBACK_CONTEXT" ]; then
+    # Output as JSON for Claude Code to inject as additionalContext
+    # This will be shown to Claude at the start of the session
+    jq -n \
+      --arg context "$FEEDBACK_CONTEXT" \
+      --arg pr "$PR_URL" \
+      --argjson count "$FEEDBACK_COUNT" \
+      '{
+        "additionalContext": ("You are continuing work on a PR that has received feedback.\n\nPR: " + $pr + "\nPending feedback items: " + ($count | tostring) + "\n\n" + $context + "\n\nPlease address the feedback items above.")
+      }'
+    exit 0
+  fi
+fi
+
+# No context to inject
+exit 0

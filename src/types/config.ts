@@ -49,6 +49,15 @@ export const QualityGatesSchema = z.object({
   requireLintPass: z.boolean().default(true),
 });
 
+export const QueueConfigSchema = z.object({
+  // Trigger replenishment when queue size falls below this
+  minQueueSize: z.number().int().nonnegative().default(5),
+  // Replenish up to this many issues
+  targetQueueSize: z.number().int().positive().default(20),
+  // Automatically replenish queue when it runs low
+  autoReplenish: z.boolean().default(true),
+});
+
 export const OSSConfigSchema = z.object({
   discoveryMode: z.enum(["direct", "search", "intelligent"]).default("direct"),
   directRepos: z.array(z.string()).default([]),
@@ -58,6 +67,7 @@ export const OSSConfigSchema = z.object({
   maxStars: z.number().int().positive().default(50000),
   requireNoExistingPR: z.boolean().default(true),
   qualityGates: QualityGatesSchema.default({}),
+  queue: QueueConfigSchema.default({}),
 });
 
 export const B2BConfigSchema = z.object({
@@ -123,6 +133,7 @@ export type GitConfig = z.infer<typeof GitConfigSchema>;
 export type LoggingConfig = z.infer<typeof LoggingConfigSchema>;
 export type ParallelConfig = z.infer<typeof ParallelConfigSchema>;
 export type QualityGates = z.infer<typeof QualityGatesSchema>;
+export type QueueConfig = z.infer<typeof QueueConfigSchema>;
 export type OSSConfig = z.infer<typeof OSSConfigSchema>;
 export type B2BConfig = z.infer<typeof B2BConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;

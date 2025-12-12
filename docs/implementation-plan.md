@@ -154,8 +154,8 @@ That:
 
 - [x] Per-issue budget limits (via config)
 - [x] Budget configuration in config file
-- [ ] Daily/monthly budget tracking (partial)
-- [ ] Hard stop at budget threshold
+- [x] Daily/monthly budget tracking (StateManager + BudgetManager)
+- [x] Hard stop at budget threshold (IssueProcessor + AutonomousRunner)
 
 #### 2.3 Session Management
 
@@ -184,11 +184,13 @@ That:
 
 ---
 
-## Phase 3: Feedback Loop & PR Monitoring
+## Phase 3: Feedback Loop & PR Monitoring ✅
 
 **Goal**: Implement the hooks-based feedback loop for iterating on PR feedback.
 
 **Duration estimate**: ~1-2 weeks
+
+**Status**: Core functionality complete - hooks integration, PR monitoring, and feedback parsing implemented.
 
 ### Dependencies
 
@@ -198,30 +200,34 @@ That:
 
 #### 3.1 Claude Code Hooks Integration
 
-- [ ] Create hook scripts directory structure
-- [ ] Implement `on-session-stop.sh` - Capture PR creation, save state
-- [ ] Implement `on-session-start.sh` - Inject feedback on resume
-- [ ] Implement `on-pr-created.sh` - Register PR for monitoring
+- [x] Create hook scripts directory structure (`.claude/hooks/`)
+- [x] Implement `session-start.sh` - Inject feedback on resume
+- [x] Implement `stop.sh` - Capture PR creation, save state
+- [x] Implement `session-end.sh` - Save session state
+- [x] Configure hooks in `.claude/settings.json`
+- [x] Internal CLI commands for hooks (`internal get-session-context`, `internal register-pr`, etc.)
 
 #### 3.2 Feedback Monitor Service
 
 - [x] Feedback parser for PR comments (FeedbackParser class)
 - [x] Classify feedback type (approval, changes_requested, comment, automated)
 - [x] Detect automated feedback (Sourcery, CodeRabbit, dependabot, etc.)
-- [ ] PR polling mechanism (GitHub API via `gh`)
+- [x] PR monitoring via PRService and StateManager (`monitored_prs` table)
+- [x] `oss-agent prs` command to list and check monitored PRs
 
-#### 3.3 Feedback Response Engine
+#### 3.3 Feedback Response Engine ✅
 
-- [ ] Parse feedback into actionable items
-- [ ] Generate fix prompt from feedback
-- [ ] Apply fixes and push
+- [x] Parse feedback into actionable items (FeedbackParser.parse() → ActionableFeedback[])
+- [x] Generate fix prompt from feedback (IterationHandler.buildIterationPrompt() + FeedbackParser.formatForPrompt())
+- [x] Apply fixes and push (IterationHandler.iterate() - AI execution, commit, push)
 - [x] Iteration limits and guards (via config maxIterations)
 
 #### 3.4 CLI Commands (Phase 3)
 
 - [x] `oss-agent watch` - Start feedback monitor (placeholder)
 - [x] `oss-agent iterate <pr-url>` - Process PR feedback and iterate
-- [ ] `oss-agent prs` - List PRs being monitored
+- [x] `oss-agent prs` - List PRs being monitored
+- [x] `oss-agent internal` - Hidden commands for hooks integration
 
 ### Deliverables
 
@@ -237,11 +243,13 @@ That:
 
 ---
 
-## Phase 4: Issue Discovery & Selection (OSS Mode)
+## Phase 4: Issue Discovery & Selection (OSS Mode) ✅
 
 **Goal**: Implement intelligent issue discovery and prioritization for OSS contributions.
 
 **Duration estimate**: ~1-2 weeks
+
+**Status**: Complete - all functionality implemented including autonomous mode, rate limiting, conflict detection, and queue management.
 
 ### Dependencies
 
@@ -261,7 +269,8 @@ That:
 - [x] Filter modes: unassigned_no_pr, all_open, custom
 - [x] Issue scoring algorithm
 - [x] "Good first issue" prioritization
-- [ ] Conflict detection (issues that might touch same files)
+- [x] Conflict detection - pre-flight analysis of issue scope (ConflictDetector class)
+- [x] Conflict detection - runtime check against in-progress issues
 
 #### 4.3 Fork Management ✅
 
@@ -275,8 +284,9 @@ That:
 #### 4.4 Queue Management
 
 - [x] Issue queue with priorities (queue command with prioritize subcommand)
-- [ ] Rate limiting (max PRs per project per day)
-- [ ] Automatic queue replenishment
+- [x] Rate limiting enforcement (RateLimiter class - max PRs per project per day)
+- [x] Automatic queue replenishment (QueueManager class)
+- [x] Queue configuration (minQueueSize, targetQueueSize, autoReplenish)
 
 #### 4.5 Discovery Filters & Modes
 
@@ -291,7 +301,7 @@ That:
 - [x] `oss-agent discover` - Find projects matching criteria
 - [x] `oss-agent suggest` - Suggest issues to work on
 - [x] `oss-agent queue` - Show/manage issue queue (list, add, skip, prioritize, clear)
-- [ ] `oss-agent run` - Autonomous mode (work through queue)
+- [x] `oss-agent run` - Autonomous mode (work through queue with rate limiting, conflict detection, auto-replenishment)
 
 ### Deliverables
 
@@ -448,14 +458,14 @@ That:
 
 ## Milestone Summary
 
-| Milestone | Phases | Key Capability |
-|-----------|--------|----------------|
-| **M1: First PR** | 0-1 | Can create a PR from an issue URL |
-| **M2: Reliable Operation** | 2 | Budget control, state persistence, resume |
-| **M3: Feedback Loop** | 3 | Iterate on PR feedback automatically |
-| **M4: Autonomous OSS** | 4-5 | Discover issues, work in parallel |
-| **M5: B2B Ready** | 6 | Private repos, Jira, campaigns |
-| **M6: Production** | 7 | Hardened, documented, polished |
+| Milestone | Phases | Key Capability | Status |
+|-----------|--------|----------------|--------|
+| **M1: First PR** | 0-1 | Can create a PR from an issue URL | ✅ Complete |
+| **M2: Reliable Operation** | 2 | Budget control, state persistence, resume | ✅ Complete |
+| **M3: Feedback Loop** | 3 | Iterate on PR feedback automatically | ✅ Complete |
+| **M4: Autonomous OSS** | 4-5 | Discover issues, work in parallel | ✅ Complete |
+| **M5: B2B Ready** | 6 | Private repos, Jira, campaigns | 🔜 Pending |
+| **M6: Production** | 7 | Hardened, documented, polished | 🔜 Pending |
 
 ---
 
@@ -481,6 +491,11 @@ That:
 
 ## Next Steps
 
-1. Complete Phase 0 setup
-2. Start Phase 1 with AI Provider abstraction
-3. Begin dogfooding immediately once basic flow works
+1. ~~Complete Phase 0 setup~~ ✅
+2. ~~Start Phase 1 with AI Provider abstraction~~ ✅
+3. ~~Begin dogfooding immediately once basic flow works~~ ✅
+4. ~~Complete Phase 2: State Management & Budget Control~~ ✅
+5. ~~Complete Phase 3: Feedback Loop & PR Monitoring~~ ✅
+6. ~~Complete Phase 4: Issue Discovery & Selection~~ ✅
+7. ~~Complete Phase 5: Parallel Work with Worktrees~~ ✅
+8. **Next**: Begin Phase 6 (B2B Mode) or Phase 7 (Advanced Features)

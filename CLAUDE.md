@@ -65,14 +65,32 @@ Configuration defined with Zod schemas in `src/types/config.ts`. Loaded from:
 
 ### Current CLI Commands
 
+**Core Workflow:**
 - `work <issue-url>` - Work on a GitHub issue
 - `iterate` - Address PR feedback
 - `watch` - Monitor PRs for feedback
 - `resume <session-id>` - Resume a previous session
+
+**Discovery & Selection:**
+- `discover` - Find OSS projects matching criteria
+- `suggest` - Suggest issues to work on
+- `queue` - Manage issue queue (list, add, skip, prioritize, clear)
+
+**Autonomous Mode:**
+- `run` - Autonomous mode (work through queue with rate limiting, conflict detection)
+- `work-parallel --count N` - Work on N issues in parallel
+- `parallel-status` - Show parallel work status
+
+**Monitoring:**
+- `prs` - List monitored PRs with feedback status
 - `history` - View session history
 - `status` - Show current state
+
+**Management:**
 - `config` - Manage configuration
 - `cleanup` - Clean up worktrees and old data
+- `cancel <issue>` - Cancel specific parallel work
+- `internal` - Hidden commands for hooks integration
 
 ## TypeScript Conventions
 
