@@ -2,6 +2,8 @@ import { Command } from "commander";
 import pc from "picocolors";
 import { logger } from "../../infra/logger.js";
 import { loadConfig, getConfigDir } from "../config/loader.js";
+import { StateManager } from "../../core/state/state-manager.js";
+import { BudgetManager } from "../../core/engine/budget-manager.js";
 
 export function createStatusCommand(): Command {
   const command = new Command("status")
@@ -15,43 +17,92 @@ export function createStatusCommand(): Command {
       logger.header("OSS Agent - Status");
 
       const config = loadConfig();
+      const dataDir = getConfigDir();
+      const stateManager = new StateManager(dataDir);
 
-      // Configuration summary
-      console.error(pc.bold("Configuration"));
-      console.error(pc.dim("─".repeat(40)));
-      console.error(`  Mode:        ${pc.cyan(config.mode)}`);
-      console.error(`  AI Provider: ${pc.cyan(config.ai.provider)}`);
-      console.error(`  Model:       ${pc.cyan(config.ai.model)}`);
-      console.error(`  Data dir:    ${pc.dim(getConfigDir())}`);
-      console.error("");
+      try {
+        const budgetManager = new BudgetManager(stateManager, config.budget);
 
-      // Budget summary
-      console.error(pc.bold("Budget"));
-      console.error(pc.dim("─".repeat(40)));
-      console.error(`  Daily limit:     ${pc.yellow(`$${config.budget.dailyLimitUsd}`)}`);
-      console.error(`  Monthly limit:   ${pc.yellow(`$${config.budget.monthlyLimitUsd}`)}`);
-      console.error(`  Per-issue limit: ${pc.yellow(`$${config.budget.perIssueLimitUsd}`)}`);
-      console.error("");
+        // Configuration summary
+        console.error(pc.bold("Configuration"));
+        console.error(pc.dim("─".repeat(40)));
+        console.error(`  Mode:        ${pc.cyan(config.mode)}`);
+        console.error(`  AI Provider: ${pc.cyan(config.ai.provider)}`);
+        console.error(`  Model:       ${pc.cyan(config.ai.model)}`);
+        console.error(`  Data dir:    ${pc.dim(dataDir)}`);
+        console.error("");
 
-      // TODO: Phase 2 - Show actual usage from database
-      console.error(pc.bold("Usage (today)"));
-      console.error(pc.dim("─".repeat(40)));
-      console.error(
-        `  Spent:     ${pc.green("$0.00")} / ${pc.dim(`$${config.budget.dailyLimitUsd}`)}`
-      );
-      console.error(
-        `  PRs:       ${pc.green("0")} / ${pc.dim(config.oss?.qualityGates.maxPrsPerDay?.toString() ?? "10")}`
-      );
-      console.error(`  Issues:    ${pc.green("0")} in progress`);
-      console.error("");
+        // Budget summary
+        console.error(pc.bold("Budget"));
+        console.error(pc.dim("─".repeat(40)));
+        console.error(`  Daily limit:     ${pc.yellow(`$${config.budget.dailyLimitUsd}`)}`);
+        console.error(`  Monthly limit:   ${pc.yellow(`$${config.budget.monthlyLimitUsd}`)}`);
+        console.error(`  Per-issue limit: ${pc.yellow(`$${config.budget.perIssueLimitUsd}`)}`);
+        console.error("");
 
-      // Active sessions placeholder
-      console.error(pc.bold("Active Sessions"));
-      console.error(pc.dim("─".repeat(40)));
-      console.error(pc.dim("  No active sessions"));
-      console.error("");
+        // Get real usage data from database
+        const budgetStatus = budgetManager.getStatus();
+        const prCounts = stateManager.getTodaysPRCounts();
+        const inProgressIssues = stateManager.getIssuesByState("in_progress");
+        const activeSessions = stateManager.getActiveSessions();
 
-      console.error(pc.dim("📋 Full status tracking will be available in Phase 2"));
+        // Usage section with real data
+        console.error(pc.bold("Usage (today)"));
+        console.error(pc.dim("─".repeat(40)));
+
+        const spentColor =
+          budgetStatus.todaysCost > config.budget.dailyLimitUsd * 0.8 ? pc.yellow : pc.green;
+        console.error(
+          `  Spent:     ${spentColor(`$${budgetStatus.todaysCost.toFixed(2)}`)} / ${pc.dim(`$${config.budget.dailyLimitUsd}`)}`
+        );
+
+        const maxPrsPerDay = config.oss?.qualityGates.maxPrsPerDay ?? 10;
+        const prColor = prCounts.daily >= maxPrsPerDay ? pc.yellow : pc.green;
+        console.error(
+          `  PRs:       ${prColor(prCounts.daily.toString())} / ${pc.dim(maxPrsPerDay.toString())}`
+        );
+
+        console.error(`  Issues:    ${pc.green(inProgressIssues.length.toString())} in progress`);
+        console.error("");
+
+        // Monthly usage
+        console.error(pc.bold("Usage (this month)"));
+        console.error(pc.dim("─".repeat(40)));
+        const monthlyColor =
+          budgetStatus.monthsCost > config.budget.monthlyLimitUsd * 0.8 ? pc.yellow : pc.green;
+        console.error(
+          `  Spent:     ${monthlyColor(`$${budgetStatus.monthsCost.toFixed(2)}`)} / ${pc.dim(`$${config.budget.monthlyLimitUsd}`)}`
+        );
+        console.error("");
+
+        // Active sessions
+        console.error(pc.bold("Active Sessions"));
+        console.error(pc.dim("─".repeat(40)));
+        if (activeSessions.length === 0) {
+          console.error(pc.dim("  No active sessions"));
+        } else {
+          for (const session of activeSessions) {
+            const duration = Math.round((Date.now() - session.startedAt.getTime()) / 1000 / 60);
+            console.error(`  ${pc.cyan(session.id)}`);
+            console.error(`    Issue: ${pc.dim(session.issueUrl)}`);
+            console.error(
+              `    Duration: ${duration}m | Turns: ${session.turnCount} | Cost: $${session.costUsd.toFixed(2)}`
+            );
+          }
+        }
+        console.error("");
+
+        // Statistics summary
+        const stats = stateManager.getStats();
+        console.error(pc.bold("Statistics"));
+        console.error(pc.dim("─".repeat(40)));
+        console.error(`  Total issues:   ${stats.totalIssues}`);
+        console.error(`  Total sessions: ${stats.totalSessions}`);
+        console.error(`  Total spent:    $${stats.totalCostUsd.toFixed(2)}`);
+        console.error("");
+      } finally {
+        stateManager.close();
+      }
     });
 
   return command;
