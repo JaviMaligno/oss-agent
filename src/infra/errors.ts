@@ -2,7 +2,8 @@ export class OSSAgentError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    public readonly cause?: Error
+    public readonly cause?: Error,
+    public readonly isRetryable: boolean = false
   ) {
     super(message);
     this.name = "OSSAgentError";
@@ -65,6 +66,57 @@ export class StateError extends OSSAgentError {
   }
 }
 
+export class NetworkError extends OSSAgentError {
+  constructor(message: string, cause?: Error) {
+    super(message, "NETWORK_ERROR", cause, true); // Retryable by default
+    this.name = "NetworkError";
+  }
+}
+
+export class TimeoutError extends OSSAgentError {
+  constructor(
+    message: string,
+    public readonly operationType: string,
+    public readonly timeoutMs: number
+  ) {
+    super(message, "TIMEOUT_ERROR", undefined, true); // Retryable by default
+    this.name = "TimeoutError";
+  }
+}
+
+export class CircuitOpenError extends OSSAgentError {
+  constructor(
+    public readonly operationType: string,
+    public readonly reopenAt: Date
+  ) {
+    super(
+      `Circuit breaker open for ${operationType}, will retry at ${reopenAt.toISOString()}`,
+      "CIRCUIT_OPEN",
+      undefined,
+      false // Not retryable - wait for circuit to close
+    );
+    this.name = "CircuitOpenError";
+  }
+}
+
 export function isOSSAgentError(error: unknown): error is OSSAgentError {
   return error instanceof OSSAgentError;
+}
+
+export function isRetryableError(error: unknown): boolean {
+  if (error instanceof OSSAgentError) {
+    return error.isRetryable;
+  }
+  // Consider certain error types as retryable
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    return (
+      msg.includes("econnreset") ||
+      msg.includes("econnrefused") ||
+      msg.includes("etimedout") ||
+      msg.includes("socket hang up") ||
+      msg.includes("network")
+    );
+  }
+  return false;
 }

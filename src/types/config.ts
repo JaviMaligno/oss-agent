@@ -242,12 +242,60 @@ export const ParallelConfigSchema = z.object({
   enableConflictDetection: z.boolean().default(true),
 });
 
+// === Hardening Configuration ===
+
+export const RetryConfigSchema = z.object({
+  // Maximum number of retry attempts
+  maxRetries: z.number().int().nonnegative().default(3),
+  // Base delay in milliseconds for exponential backoff
+  baseDelayMs: z.number().int().positive().default(1000),
+  // Maximum delay in milliseconds
+  maxDelayMs: z.number().int().positive().default(30000),
+  // Whether to add jitter to prevent thundering herd
+  enableJitter: z.boolean().default(true),
+});
+
+export const CircuitBreakerConfigSchema = z.object({
+  // Number of consecutive failures before opening circuit
+  failureThreshold: z.number().int().positive().default(5),
+  // Number of successes in half-open state before closing
+  successThreshold: z.number().int().positive().default(2),
+  // How long to stay open before transitioning to half-open (ms)
+  openDurationMs: z.number().int().positive().default(60000),
+});
+
+export const HealthCheckConfigSchema = z.object({
+  // How often to run health checks (ms)
+  intervalMs: z.number().int().positive().default(60000),
+  // Disk space warning threshold in GB
+  diskWarningThresholdGb: z.number().positive().default(1.0),
+  // Disk space critical threshold in GB
+  diskCriticalThresholdGb: z.number().positive().default(0.5),
+  // Memory warning threshold in MB (available memory)
+  memoryWarningThresholdMb: z.number().positive().default(100),
+});
+
+export const WatchdogConfigSchema = z.object({
+  // Timeout for AI operations (ms)
+  aiOperationTimeoutMs: z.number().int().positive().default(300000), // 5 min
+  // Timeout for git operations (ms)
+  gitOperationTimeoutMs: z.number().int().positive().default(60000), // 1 min
+});
+
+export const HardeningConfigSchema = z.object({
+  retry: RetryConfigSchema.default({}),
+  circuitBreaker: CircuitBreakerConfigSchema.default({}),
+  healthCheck: HealthCheckConfigSchema.default({}),
+  watchdog: WatchdogConfigSchema.default({}),
+});
+
 export const ConfigSchema = z.object({
   ai: AIConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
   git: GitConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
   parallel: ParallelConfigSchema.default({}),
+  hardening: HardeningConfigSchema.default({}),
   mode: z.enum(["oss", "b2b"]).default("oss"),
   oss: OSSConfigSchema.optional(),
   b2b: B2BConfigSchema.optional(),
@@ -274,3 +322,10 @@ export type JiraConfig = z.infer<typeof JiraConfigSchema>;
 export type LinearConfig = z.infer<typeof LinearConfigSchema>;
 export type SentryConfig = z.infer<typeof SentryConfigSchema>;
 export type SyncConfig = z.infer<typeof SyncConfigSchema>;
+
+// Hardening configuration types
+export type RetryConfig = z.infer<typeof RetryConfigSchema>;
+export type CircuitBreakerConfig = z.infer<typeof CircuitBreakerConfigSchema>;
+export type HealthCheckConfig = z.infer<typeof HealthCheckConfigSchema>;
+export type WatchdogConfig = z.infer<typeof WatchdogConfigSchema>;
+export type HardeningConfig = z.infer<typeof HardeningConfigSchema>;
