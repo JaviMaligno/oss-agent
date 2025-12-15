@@ -20,6 +20,7 @@ import {
   createPrsCommand,
   createRunCommand,
   createInternalCommand,
+  createCampaignCommand,
 } from "./commands/index.js";
 import { logger } from "../infra/logger.js";
 
@@ -56,6 +57,7 @@ program.addCommand(createQueueCommand());
 program.addCommand(createCancelCommand());
 program.addCommand(createPrsCommand());
 program.addCommand(createRunCommand());
+program.addCommand(createCampaignCommand());
 program.addCommand(createInternalCommand());
 
 // Error handling

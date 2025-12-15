@@ -33,6 +33,12 @@ pnpm run build
 - **Claude CLI** (`claude`) installed and authenticated
 - **GitHub CLI** (`gh`) installed and authenticated
 
+### Optional (for B2B mode)
+
+- **GitLab CLI** (`glab`) - for GitLab repository support
+- **Jira API Token** - for Jira issue source integration
+- **Linear API Key** - for Linear issue source integration
+
 ## Usage
 
 ### Work on an Issue
@@ -123,6 +129,43 @@ oss-agent cleanup --issue owner/repo#123
 6. **Commit & Push**: Commits changes and pushes to origin (or fork)
 7. **Create PR**: Opens a pull request via `gh pr create`
 
+### Campaign Management (B2B Mode)
+
+For batch processing of issues from external sources (Jira, Linear, GitHub search):
+
+```bash
+# List campaigns
+oss-agent campaign list
+oss-agent campaign list --status active
+
+# Create a campaign
+oss-agent campaign create "Sprint 42 Bug Fixes" --description "Fix all P1 bugs"
+oss-agent campaign create "Jira Issues" --source jira_jql --budget 100
+
+# Add issues to a campaign
+oss-agent campaign add-issues <campaign-id> https://github.com/org/repo/issues/1 https://github.com/org/repo/issues/2
+
+# Show campaign details
+oss-agent campaign show <campaign-id>
+
+# Start/pause/resume a campaign
+oss-agent campaign start <campaign-id>
+oss-agent campaign pause <campaign-id>
+oss-agent campaign resume <campaign-id>
+
+# Run campaign (process issues)
+oss-agent campaign run <campaign-id>
+oss-agent campaign run <campaign-id> --max-issues 5 --dry-run
+
+# View campaign issues
+oss-agent campaign issues <campaign-id>
+oss-agent campaign issues <campaign-id> --failed
+
+# Cancel or delete
+oss-agent campaign cancel <campaign-id>
+oss-agent campaign delete <campaign-id>
+```
+
 ## Configuration
 
 Configuration is stored in `~/.oss-agent/config.json`:
@@ -180,7 +223,12 @@ src/
 │   ├── feedback/           # PR feedback parsing
 │   ├── git/                # Git operations
 │   ├── github/             # GitHub API (fork management)
+│   ├── providers/          # Provider abstraction layer
+│   │   ├── repository/     # GitHub, GitLab, Bitbucket providers
+│   │   └── issue-source/   # Jira, Linear providers
 │   └── state/              # SQLite state manager
+├── b2b/                    # B2B/Enterprise features
+│   └── campaigns/          # Campaign management
 ├── infra/                  # Infrastructure utilities
 │   ├── logger.ts           # Structured logging
 │   └── errors.ts           # Error types
@@ -212,12 +260,15 @@ pnpm run lint
 - Phase 0: Project setup
 - Phase 1: Core engine (single issue flow)
 - Phase 2: State management
-- Phase 3: Feedback parsing (partial)
+- Phase 3: Feedback parsing (partial) + Budget enforcement
 - Phase 4: Fork management, issue discovery & selection
 - Phase 5: Parallel work with worktrees
+- Phase 6: B2B mode with provider abstraction
+  - Repository providers: GitHub, GitHub Enterprise, GitLab
+  - Issue source providers: Jira, Linear
+  - Campaign management system
 
 **Upcoming:**
-- Phase 6: B2B mode (enterprise support)
 - Phase 7: Advanced features & polish
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for full roadmap.

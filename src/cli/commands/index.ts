@@ -14,4 +14,5 @@ export { createQueueCommand } from "./queue.js";
 export { createCancelCommand } from "./cancel.js";
 export { createPrsCommand } from "./prs.js";
 export { createRunCommand } from "./run.js";
+export { createCampaignCommand } from "./campaign.js";
 export { createInternalCommand } from "./internal.js";

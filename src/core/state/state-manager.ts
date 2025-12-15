@@ -197,6 +197,64 @@ export class StateManager {
 
       -- Index for monitored PRs
       CREATE INDEX IF NOT EXISTS idx_monitored_prs_state ON monitored_prs(state);
+
+      -- Campaigns table (Phase 6 - B2B Mode)
+      CREATE TABLE IF NOT EXISTS campaigns (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        source_type TEXT NOT NULL DEFAULT 'manual',
+        source_config TEXT, -- JSON
+        budget_limit_usd REAL,
+        budget_spent_usd REAL DEFAULT 0,
+        total_issues INTEGER DEFAULT 0,
+        completed_issues INTEGER DEFAULT 0,
+        failed_issues INTEGER DEFAULT 0,
+        skipped_issues INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        started_at TEXT,
+        completed_at TEXT,
+        tags TEXT -- JSON array
+      );
+
+      -- Campaign issues junction table
+      CREATE TABLE IF NOT EXISTS campaign_issues (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id TEXT NOT NULL,
+        issue_url TEXT NOT NULL,
+        external_issue_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        priority INTEGER DEFAULT 0,
+        session_id TEXT,
+        pr_url TEXT,
+        cost_usd REAL,
+        added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        started_at TEXT,
+        completed_at TEXT,
+        error TEXT,
+        attempts INTEGER DEFAULT 0,
+        FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id),
+        UNIQUE(campaign_id, issue_url)
+      );
+
+      -- Campaign transitions (audit log)
+      CREATE TABLE IF NOT EXISTS campaign_transitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id TEXT NOT NULL,
+        from_status TEXT NOT NULL,
+        to_status TEXT NOT NULL,
+        transitioned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        triggered_by TEXT,
+        reason TEXT,
+        FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+      );
+
+      -- Indexes for campaigns
+      CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
+      CREATE INDEX IF NOT EXISTS idx_campaign_issues_campaign ON campaign_issues(campaign_id);
+      CREATE INDEX IF NOT EXISTS idx_campaign_issues_status ON campaign_issues(status);
     `);
   }
 
@@ -1407,3 +1465,19 @@ interface MonitoredPRRow {
   created_at: string;
   updated_at: string;
 }
+
+// Campaign types (Phase 6 - B2B Mode)
+export type {
+  Campaign,
+  CampaignIssue,
+  CampaignStatus,
+  CampaignIssueStatus,
+  CampaignSourceType,
+  CampaignSourceConfig,
+  CampaignProgress,
+  CampaignFilters,
+  CampaignIssueFilters,
+  CreateCampaignOptions,
+  UpdateCampaignOptions,
+  CampaignTransition,
+} from "../../types/campaign.js";

@@ -70,22 +70,150 @@ export const OSSConfigSchema = z.object({
   queue: QueueConfigSchema.default({}),
 });
 
+// === Repository Provider Configurations ===
+
+export const GitHubEnterpriseConfigSchema = z.object({
+  // Base URL for the GitHub Enterprise instance
+  baseUrl: z.string().url(),
+  // API URL (defaults to baseUrl/api/v3)
+  apiUrl: z.string().url().optional(),
+  // Personal access token (can also use GH_ENTERPRISE_TOKEN env var)
+  token: z.string().optional(),
+});
+
+export const GitLabConfigSchema = z.object({
+  // Base URL (defaults to gitlab.com)
+  baseUrl: z.string().url().default("https://gitlab.com"),
+  // Personal access token (can also use GITLAB_TOKEN env var)
+  token: z.string().optional(),
+  // Whether to prefer glab CLI if available
+  preferCli: z.boolean().default(true),
+});
+
+export const BitbucketConfigSchema = z.object({
+  // Bitbucket workspace
+  workspace: z.string(),
+  // Base URL (defaults to bitbucket.org)
+  baseUrl: z.string().url().default("https://bitbucket.org"),
+  // App password (can also use BITBUCKET_APP_PASSWORD env var)
+  appPassword: z.string().optional(),
+  // Bitbucket username
+  username: z.string().optional(),
+});
+
+// === Issue Source Provider Configurations ===
+
+export const JiraConfigSchema = z.object({
+  // Jira instance URL
+  baseUrl: z.string().url(),
+  // User email for authentication
+  email: z.string().email(),
+  // API token
+  apiToken: z.string(),
+  // Default project key
+  projectKey: z.string(),
+  // Cloud ID (for Jira Cloud)
+  cloudId: z.string().optional(),
+  // Whether this is Jira Server/Data Center (vs Cloud)
+  isServer: z.boolean().default(false),
+  // Default JQL filter for issue queries
+  jqlFilter: z.string().optional(),
+  // Status mapping: Jira status name -> internal IssueState
+  statusMapping: z.record(z.string()).optional(),
+  // Custom field IDs
+  customFields: z
+    .object({
+      storyPoints: z.string().optional(),
+      sprint: z.string().optional(),
+      epicLink: z.string().optional(),
+    })
+    .optional(),
+  // Transition IDs for status updates
+  transitions: z
+    .object({
+      inProgress: z.string().optional(),
+      done: z.string().optional(),
+      closed: z.string().optional(),
+    })
+    .optional(),
+});
+
+export const LinearConfigSchema = z.object({
+  // Linear API key
+  apiKey: z.string(),
+  // Team ID
+  teamId: z.string(),
+  // Project ID (optional)
+  projectId: z.string().optional(),
+  // Cycle ID (optional)
+  cycleId: z.string().optional(),
+  // Filter by state names
+  stateFilter: z.array(z.string()).optional(),
+  // Filter by priority (0=urgent, 1=high, 2=medium, 3=low, 4=none)
+  priorityFilter: z.array(z.number().int().min(0).max(4)).optional(),
+  // Filter by label names
+  labelFilter: z.array(z.string()).optional(),
+  // Auto-close issue when PR is merged
+  autoCloseOnMerge: z.boolean().default(true),
+});
+
+export const SentryConfigSchema = z.object({
+  // Sentry organization slug
+  organizationSlug: z.string(),
+  // Sentry project slug (optional, for filtering)
+  projectSlug: z.string().optional(),
+  // Auth token
+  authToken: z.string(),
+  // DSN (optional, for error tracking)
+  dsn: z.string().optional(),
+  // Minimum occurrences to consider as issue
+  minOccurrences: z.number().int().positive().default(5),
+  // Minimum affected users
+  minUsers: z.number().int().nonnegative().default(1),
+  // Exclude handled errors
+  excludeHandled: z.boolean().default(true),
+  // Issue statuses to include
+  issueStatuses: z.array(z.enum(["unresolved", "resolved", "ignored"])).default(["unresolved"]),
+  // Auto-resolve when PR merged
+  autoResolve: z.boolean().default(true),
+});
+
+// === Sync Configuration ===
+
+export const SyncConfigSchema = z.object({
+  // How often to poll for updates (ms)
+  pollIntervalMs: z.number().int().positive().default(60000),
+  // Enable webhook listener
+  enableWebhooks: z.boolean().default(false),
+  // Webhook server port
+  webhookPort: z.number().int().positive().default(3456),
+  // Update external system when state changes
+  pushUpdates: z.boolean().default(true),
+});
+
+// === B2B Configuration ===
+
 export const B2BConfigSchema = z.object({
+  // Issue source provider
   issueSource: z.enum(["jira", "linear", "sentry", "github"]).default("github"),
-  jira: z
-    .object({
-      baseUrl: z.string().url(),
-      email: z.string().email(),
-      apiToken: z.string(),
-      projectKey: z.string(),
-    })
-    .optional(),
-  linear: z
-    .object({
-      apiKey: z.string(),
-      teamId: z.string(),
-    })
-    .optional(),
+
+  // Repository provider (auto-detected from URLs, but can be forced)
+  repositoryProvider: z.enum(["github", "github-enterprise", "gitlab", "bitbucket"]).optional(),
+
+  // Provider configurations
+  jira: JiraConfigSchema.optional(),
+  linear: LinearConfigSchema.optional(),
+  sentry: SentryConfigSchema.optional(),
+  githubEnterprise: GitHubEnterpriseConfigSchema.optional(),
+  gitlab: GitLabConfigSchema.optional(),
+  bitbucket: BitbucketConfigSchema.optional(),
+
+  // Sync configuration
+  sync: SyncConfigSchema.default({}),
+
+  // Default repository for B2B mode (owner/repo format)
+  // Used when issues don't have repository context
+  defaultRepository: z.string().optional(),
 });
 
 export const LoggingConfigSchema = z.object({
@@ -137,3 +265,12 @@ export type QueueConfig = z.infer<typeof QueueConfigSchema>;
 export type OSSConfig = z.infer<typeof OSSConfigSchema>;
 export type B2BConfig = z.infer<typeof B2BConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
+
+// Provider configuration types
+export type GitHubEnterpriseConfig = z.infer<typeof GitHubEnterpriseConfigSchema>;
+export type GitLabConfig = z.infer<typeof GitLabConfigSchema>;
+export type BitbucketConfig = z.infer<typeof BitbucketConfigSchema>;
+export type JiraConfig = z.infer<typeof JiraConfigSchema>;
+export type LinearConfig = z.infer<typeof LinearConfigSchema>;
+export type SentryConfig = z.infer<typeof SentryConfigSchema>;
+export type SyncConfig = z.infer<typeof SyncConfigSchema>;
