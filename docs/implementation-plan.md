@@ -363,11 +363,13 @@ That:
 
 ---
 
-## Phase 6: B2B Mode - Internal Repository Support
+## Phase 6: B2B Mode - Internal Repository Support ✅
 
 **Goal**: Extend the system to work with private repositories and internal tooling.
 
 **Duration estimate**: ~2-3 weeks
+
+**Status**: Complete - Provider abstraction layer, multi-platform support, and campaign management implemented.
 
 ### Dependencies
 
@@ -375,44 +377,58 @@ That:
 
 ### Tasks
 
-#### 6.1 Authentication & Access
+#### 6.1 Provider Abstraction Layer
 
-- [ ] GitHub Enterprise support
-- [ ] GitLab support (via MCP or API)
-- [ ] Bitbucket support (MCP already available)
-- [ ] Credential management for multiple providers
+- [x] `RepositoryProvider` interface for multi-platform support
+- [x] `IssueSourceProvider` interface for issue tracking systems
+- [x] Provider factory with automatic detection
+- [x] URL parsing for all supported platforms
 
-#### 6.2 Issue Source Integrations
+#### 6.2 Repository Providers
 
-- [ ] Jira integration (read issues, update status)
-- [ ] Linear integration
-- [ ] Sentry integration (errors as issues)
-- [ ] Custom issue source interface
+- [x] GitHub provider (base implementation using `gh` CLI)
+- [x] GitHub Enterprise support (custom hostname, API URL)
+- [x] GitLab support (using `glab` CLI + REST API fallback)
+- [x] Bitbucket support (via MCP tools)
 
-#### 6.3 Campaign Management
+#### 6.3 Issue Source Integrations
 
-- [ ] Define campaign (criteria, scope, limits)
-- [ ] Campaign progress tracking
-- [ ] Reporting (issues closed, PRs merged, cost)
+- [x] GitHub Issues provider
+- [x] Jira integration (REST API, JQL queries, status transitions)
+- [x] Linear integration (GraphQL API, state mapping)
+- [x] Custom issue source interface
 
-#### 6.4 CLI Commands (Phase 6)
+#### 6.4 Campaign Management
 
-- [ ] `oss-agent campaign create` - Define a new campaign
-- [ ] `oss-agent campaign run <id>` - Execute campaign
-- [ ] `oss-agent campaign status <id>` - Campaign progress
-- [ ] `oss-agent report` - Generate reports
+- [x] Campaign CRUD operations
+- [x] Campaign status lifecycle (draft → active → paused → completed/cancelled)
+- [x] Issue queue management with priorities
+- [x] Budget tracking and limits
+- [x] Campaign progress tracking (total, completed, failed issues)
+- [x] Campaign transitions audit log
+
+#### 6.5 CLI Commands (Phase 6)
+
+- [x] `oss-agent campaign list` - List all campaigns
+- [x] `oss-agent campaign create <name>` - Create new campaign
+- [x] `oss-agent campaign show <id>` - Show campaign details
+- [x] `oss-agent campaign add-issues <id> <urls...>` - Add issues to campaign
+- [x] `oss-agent campaign start <id>` - Start campaign execution
+- [x] `oss-agent campaign pause <id>` - Pause campaign
+- [x] `oss-agent campaign resume <id>` - Resume paused campaign
+- [x] `oss-agent campaign status <id>` - Show execution progress
 
 ### Deliverables
 
-- Work on private repositories
+- Work on private repositories via GitHub Enterprise, GitLab, Bitbucket
 - Pull issues from Jira/Linear
-- Campaign-based batch operations
+- Campaign-based batch operations with budget control
 
 ### Exit Criteria
 
 - Successfully run campaign on private repo
-- Jira integration working end-to-end
-- Generate meaningful campaign report
+- Jira/Linear integration working end-to-end
+- Campaign progress and budget tracking functional
 
 ---
 
@@ -464,7 +480,7 @@ That:
 | **M2: Reliable Operation** | 2 | Budget control, state persistence, resume | ✅ Complete |
 | **M3: Feedback Loop** | 3 | Iterate on PR feedback automatically | ✅ Complete |
 | **M4: Autonomous OSS** | 4-5 | Discover issues, work in parallel | ✅ Complete |
-| **M5: B2B Ready** | 6 | Private repos, Jira, campaigns | 🔜 Pending |
+| **M5: B2B Ready** | 6 | Private repos, Jira/Linear, campaigns | ✅ Complete |
 | **M6: Production** | 7 | Hardened, documented, polished | 🔜 Pending |
 
 ---
@@ -498,4 +514,5 @@ That:
 5. ~~Complete Phase 3: Feedback Loop & PR Monitoring~~ ✅
 6. ~~Complete Phase 4: Issue Discovery & Selection~~ ✅
 7. ~~Complete Phase 5: Parallel Work with Worktrees~~ ✅
-8. **Next**: Begin Phase 6 (B2B Mode) or Phase 7 (Advanced Features)
+8. ~~Complete Phase 6: B2B Mode~~ ✅
+9. **Next**: Begin Phase 7 (Advanced Features & Polish)
