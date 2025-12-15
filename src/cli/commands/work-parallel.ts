@@ -7,6 +7,7 @@ import { GitOperations } from "../../core/git/git-operations.js";
 import { WorktreeManager } from "../../core/git/worktree-manager.js";
 import { ParallelOrchestrator, ParallelStatus } from "../../core/engine/parallel-orchestrator.js";
 import { createProvider } from "../../core/ai/provider-factory.js";
+import { CleanupManager } from "../../infra/cleanup-manager.js";
 
 export function createWorkParallelCommand(): Command {
   const command = new Command("work-parallel")
@@ -42,11 +43,16 @@ interface WorkParallelOptions {
 }
 
 async function runWorkParallel(issueUrls: string[], options: WorkParallelOptions): Promise<void> {
+  // Install shutdown handlers for cleanup
+  const cleanupManager = CleanupManager.getInstance();
+  cleanupManager.installShutdownHandlers();
+
   logger.header("OSS Agent - Parallel Work");
 
   // Load configuration
   const config = loadConfig();
   const dataDir = expandPath(config.dataDir);
+  const hardeningConfig = config.hardening;
 
   // Validate issue URLs
   const invalidUrls = issueUrls.filter(
@@ -76,7 +82,7 @@ async function runWorkParallel(issueUrls: string[], options: WorkParallelOptions
 
   // Initialize components
   const stateManager = new StateManager(dataDir);
-  const gitOps = new GitOperations(config.git, dataDir);
+  const gitOps = new GitOperations(config.git, dataDir, hardeningConfig);
   const worktreeManager = new WorktreeManager(gitOps, config.parallel);
   const aiProvider = await createProvider(config);
 

@@ -1,5 +1,10 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { logger } from "../../infra/logger.js";
 import { withRepoLock } from "../../infra/repo-lock.js";
+import { registerWorktreeCleanup } from "../../infra/cleanup-manager.js";
+import { HealthChecker, HealthCheckResult } from "../../infra/health-check.js";
 import { StateManager } from "../state/state-manager.js";
 import { GitOperations, CloneResult } from "../git/git-operations.js";
 import { AIProvider, QueryResult } from "../ai/types.js";
@@ -8,7 +13,10 @@ import { RateLimiter } from "./rate-limiter.js";
 import { BudgetManager } from "./budget-manager.js";
 import { Issue, IssueWorkRecord } from "../../types/issue.js";
 import { Session } from "../../types/session.js";
-import { Config } from "../../types/config.js";
+import { Config, HardeningConfig } from "../../types/config.js";
+
+/** Default timeout for test/lint commands in milliseconds (5 minutes) */
+const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface ProcessIssueOptions {
   /** URL of the GitHub issue */
@@ -56,20 +64,54 @@ export class IssueProcessor {
   private repoService: RepoService;
   private rateLimiter: RateLimiter | null = null;
   private budgetManager: BudgetManager;
+  private healthChecker: HealthChecker | null = null;
 
   constructor(
     private config: Config,
     private stateManager: StateManager,
     private gitOps: GitOperations,
-    private aiProvider: AIProvider
+    private aiProvider: AIProvider,
+    hardeningConfig?: HardeningConfig
   ) {
-    this.repoService = new RepoService();
+    this.repoService = new RepoService(hardeningConfig);
     // Initialize rate limiter if quality gates are configured
     if (config.oss?.qualityGates) {
       this.rateLimiter = new RateLimiter(stateManager, config.oss.qualityGates);
     }
     // Initialize budget manager
     this.budgetManager = new BudgetManager(stateManager, config.budget);
+    // Initialize health checker if hardening config provided
+    if (hardeningConfig?.healthCheck) {
+      this.healthChecker = new HealthChecker({
+        intervalMs: hardeningConfig.healthCheck.intervalMs,
+        diskWarningThresholdGb: hardeningConfig.healthCheck.diskWarningThresholdGb,
+        diskCriticalThresholdGb: hardeningConfig.healthCheck.diskCriticalThresholdGb,
+        memoryWarningThresholdMb: hardeningConfig.healthCheck.memoryWarningThresholdMb,
+        onWarning: (result) => this.onHealthWarning(result),
+        onCritical: (result) => this.onHealthCritical(result),
+      });
+      this.healthChecker.setAIProvider(aiProvider);
+    }
+  }
+
+  /**
+   * Handle health warning
+   */
+  private onHealthWarning(result: HealthCheckResult): void {
+    logger.warn("Health warning detected", {
+      diskSpace: result.checks.diskSpace,
+      memory: result.checks.memory,
+    });
+  }
+
+  /**
+   * Handle health critical
+   */
+  private onHealthCritical(result: HealthCheckResult): void {
+    logger.error("Critical health issue detected", {
+      diskSpace: result.checks.diskSpace,
+      memory: result.checks.memory,
+    });
   }
 
   /**
@@ -181,6 +223,9 @@ export class IssueProcessor {
       logger.step(3, 6, "Setting up worktree...");
       const worktreePath = await this.gitOps.createWorktree(repoPath, branchName, issue.id);
 
+      // Register worktree cleanup for graceful shutdown
+      registerWorktreeCleanup(repoPath, worktreePath);
+
       return { branchName, worktreePath };
     });
 
@@ -215,6 +260,30 @@ export class IssueProcessor {
 
     // Build the prompt for the AI
     const prompt = this.buildPrompt(issueData, owner, repo, branchName);
+
+    // Check health before AI query (if health checker is configured)
+    if (this.healthChecker) {
+      const healthResult = await this.healthChecker.check();
+      if (healthResult.overallStatus === "critical") {
+        const criticalMsg = `Health check critical before AI query: disk=${healthResult.checks.diskSpace.availableGb}GB, memory=${healthResult.checks.memory.availableMb}MB`;
+        logger.error(criticalMsg);
+        this.stateManager.transitionSession(session.id, "failed", criticalMsg);
+        this.stateManager.transitionIssue(issue.id, "abandoned", criticalMsg, session.id);
+        return {
+          success: false,
+          issue,
+          session: this.stateManager.getSession(session.id)!,
+          error: criticalMsg,
+          metrics: {
+            turns: 0,
+            durationMs: Date.now() - startTime,
+            costUsd: 0,
+            filesChanged: 0,
+            linesChanged: 0,
+          },
+        };
+      }
+    }
 
     // Execute AI query
     logger.step(4, 6, "Invoking AI to analyze and implement solution...");
@@ -589,11 +658,210 @@ Changes prepared with assistance from OSS-Agent`;
       };
     }
 
-    // TODO: Add test execution check (gates.requireTestsPass)
-    // TODO: Add lint check (gates.requireLintPass)
+    // Test execution check
+    if (gates.requireTestsPass) {
+      const testCmd = this.detectTestCommand(worktreePath);
+      if (testCmd) {
+        logger.info(`Running tests: ${testCmd}`);
+        const testResult = await this.runCommand(testCmd, worktreePath);
+        if (!testResult.success) {
+          const truncatedOutput = testResult.output.slice(0, 500);
+          return {
+            passed: false,
+            reason: `Tests failed:\n${truncatedOutput}`,
+          };
+        }
+        logger.debug("Tests passed");
+      } else {
+        logger.debug("No test command detected, skipping test check");
+      }
+    }
+
+    // Lint check
+    if (gates.requireLintPass) {
+      const lintCmd = this.detectLintCommand(worktreePath);
+      if (lintCmd) {
+        logger.info(`Running linter: ${lintCmd}`);
+        const lintResult = await this.runCommand(lintCmd, worktreePath);
+        if (!lintResult.success) {
+          const truncatedOutput = lintResult.output.slice(0, 500);
+          return {
+            passed: false,
+            reason: `Lint failed:\n${truncatedOutput}`,
+          };
+        }
+        logger.debug("Lint passed");
+      } else {
+        logger.debug("No lint command detected, skipping lint check");
+      }
+    }
 
     logger.debug(`Quality gates passed for ${worktreePath}`);
     return { passed: true, reason: "All gates passed" };
+  }
+
+  /**
+   * Detect the test command for a project
+   */
+  private detectTestCommand(worktreePath: string): string | null {
+    // Check for Node.js project
+    const packageJsonPath = join(worktreePath, "package.json");
+    if (existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+          scripts?: Record<string, string>;
+        };
+        const testScript = pkg.scripts?.["test"];
+        // Skip placeholder test scripts
+        if (testScript && !testScript.includes("no test specified") && testScript !== "exit 0") {
+          // Check if using npm or pnpm or yarn
+          if (existsSync(join(worktreePath, "pnpm-lock.yaml"))) {
+            return "pnpm test";
+          } else if (existsSync(join(worktreePath, "yarn.lock"))) {
+            return "yarn test";
+          }
+          return "npm test";
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Check for Python project
+    if (
+      existsSync(join(worktreePath, "pytest.ini")) ||
+      existsSync(join(worktreePath, "pyproject.toml")) ||
+      existsSync(join(worktreePath, "setup.py"))
+    ) {
+      if (existsSync(join(worktreePath, "tests"))) {
+        return "python -m pytest";
+      }
+    }
+
+    // Check for Rust project
+    if (existsSync(join(worktreePath, "Cargo.toml"))) {
+      return "cargo test";
+    }
+
+    // Check for Go project
+    if (existsSync(join(worktreePath, "go.mod"))) {
+      return "go test ./...";
+    }
+
+    return null;
+  }
+
+  /**
+   * Detect the lint command for a project
+   */
+  private detectLintCommand(worktreePath: string): string | null {
+    // Check for Node.js project
+    const packageJsonPath = join(worktreePath, "package.json");
+    if (existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+          scripts?: Record<string, string>;
+        };
+        if (pkg.scripts?.["lint"]) {
+          if (existsSync(join(worktreePath, "pnpm-lock.yaml"))) {
+            return "pnpm run lint";
+          } else if (existsSync(join(worktreePath, "yarn.lock"))) {
+            return "yarn lint";
+          }
+          return "npm run lint";
+        }
+      } catch {
+        // Ignore parse errors
+      }
+
+      // Check for ESLint config files
+      const eslintConfigs = [
+        ".eslintrc.js",
+        ".eslintrc.cjs",
+        ".eslintrc.json",
+        ".eslintrc.yaml",
+        ".eslintrc.yml",
+        "eslint.config.js",
+        "eslint.config.mjs",
+      ];
+      for (const config of eslintConfigs) {
+        if (existsSync(join(worktreePath, config))) {
+          return "npx eslint .";
+        }
+      }
+    }
+
+    // Check for Python linters
+    if (existsSync(join(worktreePath, "pyproject.toml"))) {
+      // Check for ruff in pyproject.toml
+      try {
+        const content = readFileSync(join(worktreePath, "pyproject.toml"), "utf-8");
+        if (content.includes("[tool.ruff]")) {
+          return "ruff check .";
+        }
+        if (content.includes("[tool.flake8]") || content.includes("[flake8]")) {
+          return "flake8 .";
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+
+    // Check for Rust
+    if (existsSync(join(worktreePath, "Cargo.toml"))) {
+      return "cargo clippy";
+    }
+
+    // Check for Go
+    if (existsSync(join(worktreePath, "go.mod"))) {
+      return "golangci-lint run";
+    }
+
+    return null;
+  }
+
+  /**
+   * Run a command and return success/output
+   */
+  private runCommand(cmd: string, cwd: string): Promise<{ success: boolean; output: string }> {
+    return new Promise((resolve) => {
+      const proc = spawn("sh", ["-c", cmd], {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, CI: "true" }, // Set CI=true for predictable output
+      });
+
+      let output = "";
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+      // Set timeout to prevent hanging
+      timeoutId = setTimeout(() => {
+        proc.kill("SIGTERM");
+        output += "\n[Command timed out]";
+      }, COMMAND_TIMEOUT_MS);
+
+      proc.stdout.on("data", (data: Buffer) => {
+        output += data.toString();
+      });
+
+      proc.stderr.on("data", (data: Buffer) => {
+        output += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        resolve({ success: code === 0, output });
+      });
+
+      proc.on("error", (err) => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        resolve({ success: false, output: err.message });
+      });
+    });
   }
 
   /**
@@ -643,8 +911,6 @@ Changes prepared with assistance from OSS-Agent`;
     baseBranch: string,
     forkOwner?: string
   ): Promise<string> {
-    const { spawn } = await import("node:child_process");
-
     const prTitle = `fix: ${issueData.title}`;
     const prBody = `## Summary
 

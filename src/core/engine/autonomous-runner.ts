@@ -5,9 +5,11 @@ import { RateLimiter } from "./rate-limiter.js";
 import { BudgetManager } from "./budget-manager.js";
 import { ConflictDetector } from "./conflict-detector.js";
 import { IssueProcessor } from "./issue-processor.js";
-import { Config } from "../../types/config.js";
+import { Config, HardeningConfig } from "../../types/config.js";
 import { Issue } from "../../types/issue.js";
 import { logger } from "../../infra/logger.js";
+import { HealthChecker, HealthCheckResult } from "../../infra/health-check.js";
+import { CircuitBreakerRegistry } from "../../infra/circuit-breaker.js";
 
 /**
  * Configuration for autonomous running
@@ -108,6 +110,8 @@ export class AutonomousRunner extends EventEmitter {
   private isPaused = false;
   private config: AutonomousConfig;
   private budgetManager: BudgetManager;
+  private healthChecker: HealthChecker | null = null;
+  private stopHealthCheck: (() => void) | null = null;
 
   constructor(
     private appConfig: Config,
@@ -115,12 +119,46 @@ export class AutonomousRunner extends EventEmitter {
     private queueManager: QueueManager,
     private rateLimiter: RateLimiter,
     private conflictDetector: ConflictDetector,
-    private issueProcessor: IssueProcessor
+    private issueProcessor: IssueProcessor,
+    hardeningConfig?: HardeningConfig
   ) {
     super();
     this.config = {};
     this.status = this.createInitialStatus();
     this.budgetManager = new BudgetManager(stateManager, appConfig.budget);
+
+    // Initialize health checker if hardening config provided
+    if (hardeningConfig?.healthCheck) {
+      this.healthChecker = new HealthChecker({
+        intervalMs: hardeningConfig.healthCheck.intervalMs,
+        diskWarningThresholdGb: hardeningConfig.healthCheck.diskWarningThresholdGb,
+        diskCriticalThresholdGb: hardeningConfig.healthCheck.diskCriticalThresholdGb,
+        memoryWarningThresholdMb: hardeningConfig.healthCheck.memoryWarningThresholdMb,
+        onWarning: (result) => this.onHealthWarning(result),
+        onCritical: (result) => this.onHealthCritical(result),
+      });
+    }
+  }
+
+  /**
+   * Handle health warning
+   */
+  private onHealthWarning(result: HealthCheckResult): void {
+    logger.warn("Health warning in autonomous mode", {
+      diskAvailableGb: result.checks.diskSpace.availableGb,
+      memoryAvailableMb: result.checks.memory.availableMb,
+    });
+  }
+
+  /**
+   * Handle health critical - pause processing
+   */
+  private onHealthCritical(result: HealthCheckResult): void {
+    logger.error("Critical health issue - pausing autonomous mode", {
+      diskAvailableGb: result.checks.diskSpace.availableGb,
+      memoryAvailableMb: result.checks.memory.availableMb,
+    });
+    this.pause();
   }
 
   /**
@@ -147,6 +185,22 @@ export class AutonomousRunner extends EventEmitter {
     };
 
     logger.info("Starting autonomous mode");
+
+    // Start periodic health checks
+    if (this.healthChecker) {
+      this.stopHealthCheck = this.healthChecker.startPeriodic();
+      logger.debug("Periodic health checks started");
+    }
+
+    // Check circuit breaker state before starting
+    const circuitRegistry = CircuitBreakerRegistry.getInstance();
+    const circuitStatus = circuitRegistry.getStatus();
+    for (const [operation, status] of Object.entries(circuitStatus)) {
+      if (status.state === "open") {
+        logger.warn(`Circuit breaker open for ${operation}, will retry at ${status.reopenAt}`);
+      }
+    }
+
     this.emitStatusChanged();
 
     try {
@@ -257,6 +311,13 @@ export class AutonomousRunner extends EventEmitter {
     } catch (error) {
       logger.error(`Autonomous run error: ${error}`);
       result.stopReason = "error";
+    } finally {
+      // Stop periodic health checks
+      if (this.stopHealthCheck) {
+        this.stopHealthCheck();
+        this.stopHealthCheck = null;
+        logger.debug("Periodic health checks stopped");
+      }
     }
 
     // Finalize

@@ -20,6 +20,7 @@ import { DiscoveryService } from "../../oss/discovery/discovery-service.js";
 import { SelectionService } from "../../oss/selection/selection-service.js";
 import { createProvider } from "../../core/ai/index.js";
 import { logger } from "../../infra/logger.js";
+import { CleanupManager } from "../../infra/cleanup-manager.js";
 
 interface RunOptions {
   maxIssues?: string;
@@ -47,10 +48,15 @@ export function createRunCommand(): Command {
 }
 
 async function runAutonomous(options: RunOptions): Promise<void> {
+  // Install shutdown handlers for cleanup
+  const cleanupManager = CleanupManager.getInstance();
+  cleanupManager.installShutdownHandlers();
+
   try {
     const config = loadConfig();
     const dataDir = expandPath(config.dataDir);
     const stateManager = new StateManager(dataDir);
+    const hardeningConfig = config.hardening;
 
     // Initialize services
     const discoveryService = new DiscoveryService(config.oss);
@@ -69,8 +75,14 @@ async function runAutonomous(options: RunOptions): Promise<void> {
     );
     const conflictDetector = new ConflictDetector(stateManager);
     const aiProvider = await createProvider(config);
-    const gitOps = new GitOperations(config.git, dataDir);
-    const issueProcessor = new IssueProcessor(config, stateManager, gitOps, aiProvider);
+    const gitOps = new GitOperations(config.git, dataDir, hardeningConfig);
+    const issueProcessor = new IssueProcessor(
+      config,
+      stateManager,
+      gitOps,
+      aiProvider,
+      hardeningConfig
+    );
 
     // Create autonomous runner
     const runner = new AutonomousRunner(
@@ -79,7 +91,8 @@ async function runAutonomous(options: RunOptions): Promise<void> {
       queueManager,
       rateLimiter,
       conflictDetector,
-      issueProcessor
+      issueProcessor,
+      hardeningConfig
     );
 
     // Build config
