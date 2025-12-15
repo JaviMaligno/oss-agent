@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
 import { logger } from "../../infra/logger.js";
-import { GitOperationError } from "../../infra/errors.js";
-import { GitConfig } from "../../types/config.js";
+import { GitOperationError, NetworkError } from "../../infra/errors.js";
+import { GitConfig, HardeningConfig } from "../../types/config.js";
+import { retry } from "../../infra/retry.js";
+import { getCircuitBreaker, CIRCUIT_OPERATIONS } from "../../infra/circuit-breaker.js";
 
 export interface CloneResult {
   path: string;
@@ -40,13 +42,16 @@ export interface PushResult {
 export class GitOperations {
   private reposDir: string;
   private worktreesDir: string;
+  private hardeningConfig: HardeningConfig | undefined;
 
   constructor(
     private config: GitConfig,
-    dataDir: string
+    dataDir: string,
+    hardeningConfig?: HardeningConfig
   ) {
     this.reposDir = join(dataDir, "repos");
     this.worktreesDir = join(dataDir, "worktrees");
+    this.hardeningConfig = hardeningConfig;
 
     // Ensure directories exist
     if (!existsSync(this.reposDir)) {
@@ -648,36 +653,82 @@ export class GitOperations {
   /**
    * Execute a git command
    */
-  private git(args: string[], options: { cwd?: string } = {}): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const proc = spawn("git", args, {
-        cwd: options.cwd,
-        stdio: ["pipe", "pipe", "pipe"],
+  private async git(args: string[], options: { cwd?: string } = {}): Promise<string> {
+    // Commands that involve network and are safe to retry
+    const networkCommands = ["fetch", "push", "pull", "clone", "ls-remote"];
+    const isNetworkCommand = args.length > 0 && networkCommands.includes(args[0] ?? "");
+
+    const executeGit = (): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const proc = spawn("git", args, {
+          cwd: options.cwd,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout.on("data", (data: Buffer) => {
+          stdout += data.toString();
+        });
+
+        proc.stderr.on("data", (data: Buffer) => {
+          stderr += data.toString();
+        });
+
+        proc.on("close", (code) => {
+          if (code === 0) {
+            resolve(stdout);
+          } else {
+            const command = `git ${args.join(" ")}`;
+            // Check if it's a network error
+            const isNetwork =
+              stderr.includes("Could not resolve host") ||
+              stderr.includes("Connection timed out") ||
+              stderr.includes("Connection refused") ||
+              stderr.includes("unable to access") ||
+              stderr.includes("SSL") ||
+              stderr.includes("failed to connect");
+
+            if (isNetwork) {
+              reject(new NetworkError(`Git command failed: ${command}\n${stderr || stdout}`));
+            } else {
+              reject(new GitOperationError(`Git command failed: ${command}\n${stderr || stdout}`));
+            }
+          }
+        });
+
+        proc.on("error", (error) => {
+          reject(new GitOperationError(`Failed to spawn git: ${error.message}`, error));
+        });
+      });
+    };
+
+    // For network commands, use retry with circuit breaker
+    if (isNetworkCommand) {
+      const circuitBreaker = getCircuitBreaker(CIRCUIT_OPERATIONS.GIT_OPERATIONS, {
+        failureThreshold: this.hardeningConfig?.circuitBreaker.failureThreshold ?? 5,
+        successThreshold: this.hardeningConfig?.circuitBreaker.successThreshold ?? 2,
+        openDurationMs: this.hardeningConfig?.circuitBreaker.openDurationMs ?? 60000,
       });
 
-      let stdout = "";
-      let stderr = "";
+      const retryConfig = this.hardeningConfig?.retry;
 
-      proc.stdout.on("data", (data: Buffer) => {
-        stdout += data.toString();
-      });
+      return circuitBreaker.execute(() =>
+        retry(executeGit, {
+          maxRetries: retryConfig?.maxRetries ?? 3,
+          baseDelayMs: retryConfig?.baseDelayMs ?? 1000,
+          maxDelayMs: retryConfig?.maxDelayMs ?? 30000,
+          jitter: retryConfig?.enableJitter ?? true,
+          shouldRetry: (error) => error instanceof NetworkError,
+          onRetry: (error, attempt, delayMs) => {
+            logger.warn(`Git retry ${attempt}: ${error.message}, waiting ${delayMs}ms`);
+          },
+        })
+      );
+    }
 
-      proc.stderr.on("data", (data: Buffer) => {
-        stderr += data.toString();
-      });
-
-      proc.on("close", (code) => {
-        if (code === 0) {
-          resolve(stdout);
-        } else {
-          const command = `git ${args.join(" ")}`;
-          reject(new GitOperationError(`Git command failed: ${command}\n${stderr || stdout}`));
-        }
-      });
-
-      proc.on("error", (error) => {
-        reject(new GitOperationError(`Failed to spawn git: ${error.message}`, error));
-      });
-    });
+    // For non-network commands, execute directly
+    return executeGit();
   }
 }

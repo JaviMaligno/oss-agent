@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
 import { logger } from "../../infra/logger.js";
+import { RateLimitError, NetworkError } from "../../infra/errors.js";
+import { retryWithRateLimit } from "../../infra/retry.js";
+import { getCircuitBreaker, CIRCUIT_OPERATIONS } from "../../infra/circuit-breaker.js";
+import type { HardeningConfig } from "../../types/config.js";
 
 export interface RepoInfo {
   owner: string;
@@ -33,6 +37,11 @@ export interface PermissionCheck {
  * RepoService - GitHub repository operations including fork management
  */
 export class RepoService {
+  private hardeningConfig: HardeningConfig | undefined;
+
+  constructor(hardeningConfig?: HardeningConfig) {
+    this.hardeningConfig = hardeningConfig;
+  }
   /**
    * Get repository information
    */
@@ -219,9 +228,41 @@ export class RepoService {
   }
 
   /**
-   * Execute gh CLI command
+   * Execute gh CLI command with retry and circuit breaker
    */
   private async gh(args: string[]): Promise<string> {
+    const circuitBreaker = getCircuitBreaker(CIRCUIT_OPERATIONS.GITHUB_API, {
+      failureThreshold: this.hardeningConfig?.circuitBreaker.failureThreshold ?? 5,
+      successThreshold: this.hardeningConfig?.circuitBreaker.successThreshold ?? 2,
+      openDurationMs: this.hardeningConfig?.circuitBreaker.openDurationMs ?? 60000,
+    });
+
+    const retryConfig = this.hardeningConfig?.retry;
+
+    return circuitBreaker.execute(() =>
+      retryWithRateLimit(() => this.executeGh(args), {
+        maxRetries: retryConfig?.maxRetries ?? 3,
+        baseDelayMs: retryConfig?.baseDelayMs ?? 1000,
+        maxDelayMs: retryConfig?.maxDelayMs ?? 30000,
+        jitter: retryConfig?.enableJitter ?? true,
+        shouldRetry: (error) => {
+          if (error instanceof RateLimitError) return true;
+          if (error instanceof NetworkError) return true;
+          if (error.message.includes("rate limit")) return true;
+          if (error.message.includes("network")) return true;
+          return false;
+        },
+        onRetry: (error, attempt, delayMs) => {
+          logger.warn(`GitHub API retry ${attempt}: ${error.message}, waiting ${delayMs}ms`);
+        },
+      })
+    );
+  }
+
+  /**
+   * Execute gh CLI command (internal)
+   */
+  private executeGh(args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn("gh", args, {
         stdio: ["ignore", "pipe", "pipe"],
@@ -242,7 +283,21 @@ export class RepoService {
         if (code === 0) {
           resolve(stdout);
         } else {
-          reject(new Error(`gh ${args.join(" ")} failed: ${stderr}`));
+          // Check for rate limit errors
+          if (stderr.includes("rate limit") || stderr.includes("API rate limit")) {
+            // Try to extract retry-after from error message
+            const retryMatch = stderr.match(/retry after (\d+)/i);
+            const retryAfter = retryMatch ? parseInt(retryMatch[1] ?? "60", 10) : undefined;
+            reject(new RateLimitError(`GitHub API rate limited: ${stderr}`, retryAfter));
+          } else if (
+            stderr.includes("network") ||
+            stderr.includes("connection") ||
+            stderr.includes("timeout")
+          ) {
+            reject(new NetworkError(`gh ${args.join(" ")} failed: ${stderr}`));
+          } else {
+            reject(new Error(`gh ${args.join(" ")} failed: ${stderr}`));
+          }
         }
       });
 

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -9,7 +9,12 @@ import {
   ProviderUsage,
 } from "./types.js";
 import { logger } from "../../infra/logger.js";
-import { AIConfig } from "../../types/config.js";
+import { AIConfig, HardeningConfig } from "../../types/config.js";
+import { retryWithRateLimit } from "../../infra/retry.js";
+import { getCircuitBreaker, CIRCUIT_OPERATIONS } from "../../infra/circuit-breaker.js";
+import { Watchdog } from "../../infra/watchdog.js";
+import { registerProcessCleanup, CleanupManager } from "../../infra/cleanup-manager.js";
+import { TimeoutError } from "../../infra/errors.js";
 
 export class ClaudeCLIProvider implements AIProvider {
   readonly name = "claude-cli";
@@ -30,12 +35,15 @@ export class ClaudeCLIProvider implements AIProvider {
   };
 
   private logDir: string;
+  private hardeningConfig: HardeningConfig | undefined;
 
   constructor(
     private config: AIConfig,
-    dataDir: string
+    dataDir: string,
+    hardeningConfig?: HardeningConfig
   ) {
     this.logDir = join(dataDir, "logs", "claude-sessions");
+    this.hardeningConfig = hardeningConfig;
     if (!existsSync(this.logDir)) {
       mkdirSync(this.logDir, { recursive: true });
     }
@@ -71,6 +79,43 @@ export class ClaudeCLIProvider implements AIProvider {
   }
 
   async query(prompt: string, options: QueryOptions): Promise<QueryResult> {
+    const cbConfig = this.hardeningConfig?.circuitBreaker;
+    const circuitBreaker = getCircuitBreaker(
+      CIRCUIT_OPERATIONS.AI_PROVIDER,
+      cbConfig
+        ? {
+            failureThreshold: cbConfig.failureThreshold,
+            successThreshold: cbConfig.successThreshold,
+            openDurationMs: cbConfig.openDurationMs,
+          }
+        : undefined
+    );
+
+    const retryConfig = this.hardeningConfig?.retry;
+
+    // Execute with circuit breaker and retry
+    return circuitBreaker.execute(() =>
+      retryWithRateLimit(() => this.executeQuery(prompt, options), {
+        maxRetries: retryConfig?.maxRetries ?? 2,
+        baseDelayMs: retryConfig?.baseDelayMs ?? 2000,
+        maxDelayMs: retryConfig?.maxDelayMs ?? 30000,
+        jitter: retryConfig?.enableJitter ?? true,
+        onRetry: (error, attempt, delayMs) => {
+          logger.warn(`AI query retry ${attempt}: ${error.message}, waiting ${delayMs}ms`);
+        },
+        shouldRetry: (error) => {
+          // Retry on timeout errors and transient failures
+          if (error instanceof TimeoutError) return true;
+          if (error.message.includes("timed out")) return true;
+          if (error.message.includes("ECONNRESET")) return true;
+          if (error.message.includes("spawn")) return true;
+          return false;
+        },
+      })
+    );
+  }
+
+  private executeQuery(prompt: string, options: QueryOptions): Promise<QueryResult> {
     const startTime = Date.now();
     const sessionLogFile = join(
       this.logDir,
@@ -78,20 +123,59 @@ export class ClaudeCLIProvider implements AIProvider {
     );
 
     const args = this.buildArgs(prompt, options);
+    const timeoutMs =
+      options.timeoutMs ?? this.hardeningConfig?.watchdog.aiOperationTimeoutMs ?? 300000;
 
     logger.debug("Spawning Claude CLI", { args: args.join(" "), cwd: options.cwd });
 
-    return new Promise((resolve) => {
-      const proc = spawn(this.config.cli.path, args, {
-        cwd: options.cwd,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          // Ensure CLI doesn't try to use interactive features
-          TERM: "dumb",
-          CI: "true",
+    return new Promise((resolve, reject) => {
+      let proc: ChildProcess;
+      let cleanupTaskId: string | undefined;
+      let watchdog: Watchdog | undefined;
+      let isTimedOut = false;
+
+      try {
+        proc = spawn(this.config.cli.path, args, {
+          cwd: options.cwd,
+          stdio: ["pipe", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            // Ensure CLI doesn't try to use interactive features
+            TERM: "dumb",
+            CI: "true",
+          },
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        reject(new Error(`Failed to spawn Claude CLI: ${errorMsg}`));
+        return;
+      }
+
+      // Register process for cleanup on shutdown
+      if (proc.pid) {
+        cleanupTaskId = registerProcessCleanup(proc.pid);
+      }
+
+      // Set up watchdog for hung detection
+      watchdog = new Watchdog("claude-cli-query", {
+        timeoutMs,
+        onTimeout: (ctx) => {
+          isTimedOut = true;
+          logger.warn(`Claude CLI hung after ${ctx.operationType}`, {
+            elapsed: Date.now() - ctx.startedAt.getTime(),
+          });
+          if (!proc.killed) {
+            proc.kill("SIGTERM");
+            // Force kill after 5 seconds if SIGTERM doesn't work
+            setTimeout(() => {
+              if (!proc.killed) {
+                proc.kill("SIGKILL");
+              }
+            }, 5000);
+          }
         },
       });
+      watchdog.start({ prompt: prompt.slice(0, 100) });
 
       let stdout = "";
       let stderr = "";
@@ -99,12 +183,15 @@ export class ClaudeCLIProvider implements AIProvider {
       let turns = 0;
 
       // Write prompt to stdin and close
-      proc.stdin.write(prompt);
-      proc.stdin.end();
+      proc.stdin?.write(prompt);
+      proc.stdin?.end();
 
-      proc.stdout.on("data", (data: Buffer) => {
+      proc.stdout?.on("data", (data: Buffer) => {
         const chunk = data.toString();
         stdout += chunk;
+
+        // Heartbeat on output
+        watchdog?.heartbeat();
 
         // Log to file in real-time
         this.appendToLog(sessionLogFile, `[STDOUT] ${chunk}`);
@@ -121,9 +208,13 @@ export class ClaudeCLIProvider implements AIProvider {
         }
       });
 
-      proc.stderr.on("data", (data: Buffer) => {
+      proc.stderr?.on("data", (data: Buffer) => {
         const chunk = data.toString();
         stderr += chunk;
+
+        // Heartbeat on output
+        watchdog?.heartbeat();
+
         this.appendToLog(sessionLogFile, `[STDERR] ${chunk}`);
 
         // Log progress to console (summarized)
@@ -138,6 +229,12 @@ export class ClaudeCLIProvider implements AIProvider {
       proc.on("close", (code) => {
         const durationMs = Date.now() - startTime;
 
+        // Stop watchdog and cleanup
+        watchdog?.stop();
+        if (cleanupTaskId) {
+          CleanupManager.getInstance().unregister(cleanupTaskId);
+        }
+
         // Update usage stats
         this.usage.totalQueries++;
         this.usage.queriesToday++;
@@ -148,6 +245,17 @@ export class ClaudeCLIProvider implements AIProvider {
           sessionLogFile,
           `\n--- Session Complete ---\nExit code: ${code}\nDuration: ${durationMs}ms\nTurns: ${turns}\n`
         );
+
+        if (isTimedOut) {
+          reject(
+            new TimeoutError(
+              `Claude CLI timed out after ${timeoutMs}ms`,
+              "claude-cli-query",
+              timeoutMs
+            )
+          );
+          return;
+        }
 
         if (code === 0) {
           logger.success(`Claude CLI completed in ${(durationMs / 1000).toFixed(1)}s`);
@@ -181,6 +289,13 @@ export class ClaudeCLIProvider implements AIProvider {
 
       proc.on("error", (err) => {
         const durationMs = Date.now() - startTime;
+
+        // Stop watchdog and cleanup
+        watchdog?.stop();
+        if (cleanupTaskId) {
+          CleanupManager.getInstance().unregister(cleanupTaskId);
+        }
+
         logger.error(`Failed to spawn Claude CLI: ${err.message}`);
 
         resolve({
@@ -191,16 +306,6 @@ export class ClaudeCLIProvider implements AIProvider {
           durationMs,
         });
       });
-
-      // Handle timeout
-      if (options.timeoutMs) {
-        setTimeout(() => {
-          if (!proc.killed) {
-            proc.kill("SIGTERM");
-            logger.warn(`Claude CLI timed out after ${options.timeoutMs}ms`);
-          }
-        }, options.timeoutMs);
-      }
     });
   }
 
