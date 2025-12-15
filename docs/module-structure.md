@@ -77,6 +77,7 @@ src/
 │   ├── ai/                    # AI Provider abstraction
 │   │   ├── types.ts           # AIProvider interface, QueryOptions, etc.
 │   │   ├── claude-cli-provider.ts  # Claude CLI implementation
+│   │   ├── claude-sdk-provider.ts  # Claude SDK implementation (API-based)
 │   │   └── provider-factory.ts     # Provider factory
 │   │
 │   ├── engine/                # Issue Processing Engine
@@ -129,7 +130,12 @@ src/
 │
 ├── infra/                      # Infrastructure utilities
 │   ├── logger.ts              # Structured logging with colors
-│   └── errors.ts              # Custom error types
+│   ├── errors.ts              # Custom error types (NetworkError, TimeoutError, CircuitOpenError, etc.)
+│   ├── retry.ts               # Retry with exponential backoff and jitter
+│   ├── circuit-breaker.ts     # Circuit breaker pattern for cascading failure prevention
+│   ├── watchdog.ts            # Watchdog timer for hung operation detection
+│   ├── health-check.ts        # Health monitoring (disk, memory, AI availability)
+│   └── cleanup-manager.ts     # Resource cleanup with graceful shutdown
 │
 └── types/                      # Shared type definitions
     ├── index.ts               # Re-exports
@@ -141,16 +147,32 @@ src/
     └── providers.ts           # Provider types (Phase 6)
 
 tests/                          # Test files
+├── cli/
+│   ├── helpers.ts             # Test utilities (createTestEnvironment, mocks)
+│   ├── status.test.ts         # Status command dependency tests
+│   ├── queue.test.ts          # Queue command dependency tests
+│   └── history.test.ts        # History command dependency tests
 ├── core/
 │   ├── ai-provider.test.ts    # AI provider tests
 │   ├── feedback-parser.test.ts # Feedback parsing tests
 │   ├── git-operations.test.ts # Git operations tests
 │   ├── state-manager.test.ts  # State manager tests
+│   ├── worktree-manager.test.ts # Worktree manager tests
+│   ├── parallel-orchestrator.test.ts # Parallel orchestration tests
 │   └── providers.test.ts      # Provider URL parsing tests (Phase 6)
 ├── b2b/
 │   └── campaign-service.test.ts # Campaign service tests (Phase 6)
 ├── infra/
-│   └── logger.test.ts         # Logger tests
+│   ├── logger.test.ts         # Logger tests
+│   ├── semaphore.test.ts      # Semaphore tests
+│   ├── repo-lock.test.ts      # Repository lock tests
+│   ├── retry.test.ts          # Retry with backoff tests
+│   ├── circuit-breaker.test.ts # Circuit breaker tests
+│   ├── watchdog.test.ts       # Watchdog timer tests
+│   ├── health-check.test.ts   # Health check tests
+│   └── cleanup-manager.test.ts # Cleanup manager tests
+├── oss/
+│   └── search-agent.test.ts   # Search agent tests
 └── types/
     └── config.test.ts         # Config validation tests
 ```
@@ -585,6 +607,198 @@ export interface B2BConfig {
   linear?: LinearConfig;
   sentry?: SentryConfig;
   campaigns: CampaignDefaults;
+}
+```
+
+---
+
+## Infrastructure Layer Detail
+
+### Hardening Modules (`infra/`)
+
+Production reliability infrastructure added in Phase 7.4.
+
+#### 1. Retry with Exponential Backoff (`infra/retry.ts`)
+
+```typescript
+// retry.ts
+export function retry<T>(
+  fn: () => Promise<T>,
+  options?: RetryOptions
+): Promise<T>;
+
+export function retryWithRateLimit<T>(
+  fn: () => Promise<T>,
+  options?: RetryOptions
+): Promise<T>;
+
+export function calculateBackoff(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs: number,
+  jitter: boolean
+): number;
+
+export interface RetryOptions {
+  maxRetries?: number;      // Default: 3
+  baseDelayMs?: number;     // Default: 1000ms
+  maxDelayMs?: number;      // Default: 30000ms
+  jitter?: boolean;         // Default: true (adds 0-25% random jitter)
+  shouldRetry?: (error: Error) => boolean;
+  onRetry?: (error: Error, attempt: number, delayMs: number) => void;
+}
+```
+
+#### 2. Circuit Breaker (`infra/circuit-breaker.ts`)
+
+Prevents cascading failures by stopping requests to failing services.
+
+```typescript
+// circuit-breaker.ts
+export class CircuitBreaker {
+  execute<T>(fn: () => Promise<T>): Promise<T>;
+  getState(): "closed" | "open" | "half-open";
+  reset(): void;
+  trip(): void;
+}
+
+export class CircuitBreakerRegistry {
+  static getInstance(): CircuitBreakerRegistry;
+  get(operationType: string, options?: CircuitBreakerOptions): CircuitBreaker;
+  getStatus(): Record<string, CircuitStatus>;
+  resetAll(): void;
+}
+
+export const CIRCUIT_OPERATIONS = {
+  AI_PROVIDER: "ai-provider",
+  GITHUB_API: "github-api",
+  GIT_OPERATIONS: "git-operations",
+} as const;
+```
+
+**State Machine:**
+```
+closed → (failures >= threshold) → open
+open → (after openDurationMs) → half-open
+half-open → (success) → closed
+half-open → (failure) → open
+```
+
+#### 3. Watchdog Timer (`infra/watchdog.ts`)
+
+Detects hung operations and triggers timeout callbacks.
+
+```typescript
+// watchdog.ts
+export class Watchdog {
+  start(metadata?: Record<string, unknown>): void;
+  heartbeat(): void;
+  stop(): void;
+  isRunning(): boolean;
+  getElapsedMs(): number;
+}
+
+export function createAIOperationWatchdog(
+  onTimeout: (context: WatchdogContext) => void,
+  timeoutMs?: number  // Default: 5 minutes
+): Watchdog;
+
+export function createGitOperationWatchdog(
+  onTimeout: (context: WatchdogContext) => void,
+  timeoutMs?: number  // Default: 1 minute
+): Watchdog;
+
+export function withWatchdog<T>(
+  operationType: string,
+  fn: (heartbeat: () => void) => Promise<T>,
+  options: WatchdogOptions
+): Promise<T>;
+```
+
+#### 4. Health Check (`infra/health-check.ts`)
+
+Monitors system health during long-running operations.
+
+```typescript
+// health-check.ts
+export class HealthChecker {
+  check(): Promise<HealthCheckResult>;
+  startPeriodic(): () => void;  // Returns stop function
+  setAIProvider(provider: AIProvider): void;
+}
+
+export interface HealthCheckResult {
+  timestamp: Date;
+  overallStatus: "healthy" | "warning" | "critical";
+  checks: {
+    disk: CheckResult;
+    memory: CheckResult;
+    aiProvider?: CheckResult;
+    worktrees?: CheckResult;
+  };
+}
+```
+
+**Checks performed:**
+- Disk space (warning: <1GB, critical: <500MB)
+- Memory usage (warning: >85%, critical: >95%)
+- AI provider availability (if configured)
+- Active worktree count (warning: >5)
+
+#### 5. Cleanup Manager (`infra/cleanup-manager.ts`)
+
+Manages resource cleanup on shutdown with graceful handling.
+
+```typescript
+// cleanup-manager.ts
+export class CleanupManager {
+  static getInstance(): CleanupManager;
+
+  register(task: CleanupTask): string;  // Returns task ID
+  unregister(taskId: string): boolean;
+  runAll(): Promise<CleanupResult>;
+  installShutdownHandlers(): void;  // SIGINT, SIGTERM
+}
+
+// Helper functions for common cleanup tasks
+export function registerWorktreeCleanup(
+  repoPath: string,
+  worktreePath: string
+): string;
+
+export function registerTempFileCleanup(filePath: string): string;
+
+export function registerProcessCleanup(
+  pid: number,
+  signal?: NodeJS.Signals
+): string;
+```
+
+### Configuration (`types/config.ts`)
+
+Hardening configuration schema:
+
+```typescript
+export interface HardeningConfig {
+  retry?: {
+    maxRetries?: number;
+    baseDelayMs?: number;
+    maxDelayMs?: number;
+    enableJitter?: boolean;
+  };
+  circuitBreaker?: {
+    failureThreshold?: number;
+    successThreshold?: number;
+    openDurationMs?: number;
+  };
+  healthCheck?: {
+    intervalMs?: number;
+    diskWarningThresholdGb?: number;
+    diskCriticalThresholdGb?: number;
+  };
+  watchdog?: {
+    aiOperationTimeoutMs?: number;
+  };
 }
 ```
 
