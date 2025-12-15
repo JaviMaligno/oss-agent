@@ -289,6 +289,71 @@ export const HardeningConfigSchema = z.object({
   watchdog: WatchdogConfigSchema.default({}),
 });
 
+// === MCP Server Configuration ===
+
+export const MCPStdioTransportSchema = z.object({
+  enabled: z.boolean().default(true),
+});
+
+export const MCPHttpCorsSchema = z.object({
+  enabled: z.boolean().default(false),
+  origins: z.array(z.string()).default(["http://localhost:*"]),
+});
+
+export const MCPHttpTransportSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().int().positive().default(3000),
+  host: z.string().default("127.0.0.1"),
+  // Require API key auth for HTTP transport
+  requireAuth: z.boolean().default(true),
+  cors: MCPHttpCorsSchema.default({}),
+});
+
+export const MCPTransportsSchema = z.object({
+  stdio: MCPStdioTransportSchema.default({}),
+  http: MCPHttpTransportSchema.default({}),
+});
+
+export const MCPAuthSchema = z.object({
+  // API keys for HTTP transport (plaintext in config)
+  apiKeys: z.array(z.string()).default([]),
+  // Path to API keys file (one per line, alternative to inline keys)
+  apiKeysFile: z.string().optional(),
+});
+
+export const MCPRateLimitSchema = z.object({
+  enabled: z.boolean().default(true),
+  // Max requests per minute per client
+  maxRequestsPerMinute: z.number().int().positive().default(60),
+  // Max concurrent long-running operations (work, iterate, run)
+  maxConcurrentOps: z.number().int().positive().default(3),
+});
+
+export const MCPToolsSchema = z.object({
+  // Disable specific tools by name (e.g., ["update_config", "cleanup_worktrees"])
+  disabled: z.array(z.string()).default([]),
+  // Per-tool timeout overrides in milliseconds
+  timeouts: z.record(z.number().int().positive()).default({
+    work_on_issue: 600000, // 10 min
+    iterate_on_feedback: 300000, // 5 min
+    run_autonomous: 3600000, // 1 hour
+    discover_projects: 120000, // 2 min
+  }),
+});
+
+export const MCPConfigSchema = z.object({
+  // Enable MCP server mode
+  enabled: z.boolean().default(false),
+  // Transport configurations
+  transports: MCPTransportsSchema.default({}),
+  // Authentication configuration
+  auth: MCPAuthSchema.default({}),
+  // Rate limiting configuration
+  rateLimit: MCPRateLimitSchema.default({}),
+  // Tool-specific configuration
+  tools: MCPToolsSchema.default({}),
+});
+
 export const ConfigSchema = z.object({
   ai: AIConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
@@ -296,6 +361,7 @@ export const ConfigSchema = z.object({
   logging: LoggingConfigSchema.default({}),
   parallel: ParallelConfigSchema.default({}),
   hardening: HardeningConfigSchema.default({}),
+  mcp: MCPConfigSchema.optional(),
   mode: z.enum(["oss", "b2b"]).default("oss"),
   oss: OSSConfigSchema.optional(),
   b2b: B2BConfigSchema.optional(),
@@ -329,3 +395,13 @@ export type CircuitBreakerConfig = z.infer<typeof CircuitBreakerConfigSchema>;
 export type HealthCheckConfig = z.infer<typeof HealthCheckConfigSchema>;
 export type WatchdogConfig = z.infer<typeof WatchdogConfigSchema>;
 export type HardeningConfig = z.infer<typeof HardeningConfigSchema>;
+
+// MCP configuration types
+export type MCPStdioTransport = z.infer<typeof MCPStdioTransportSchema>;
+export type MCPHttpCors = z.infer<typeof MCPHttpCorsSchema>;
+export type MCPHttpTransport = z.infer<typeof MCPHttpTransportSchema>;
+export type MCPTransports = z.infer<typeof MCPTransportsSchema>;
+export type MCPAuth = z.infer<typeof MCPAuthSchema>;
+export type MCPRateLimit = z.infer<typeof MCPRateLimitSchema>;
+export type MCPTools = z.infer<typeof MCPToolsSchema>;
+export type MCPConfig = z.infer<typeof MCPConfigSchema>;

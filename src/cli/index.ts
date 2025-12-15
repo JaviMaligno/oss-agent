@@ -22,6 +22,7 @@ import {
   createInternalCommand,
   createCampaignCommand,
 } from "./commands/index.js";
+import { createServeCommand } from "./commands/serve.js";
 import { logger } from "../infra/logger.js";
 
 const VERSION = "0.1.0";
@@ -59,6 +60,7 @@ program.addCommand(createPrsCommand());
 program.addCommand(createRunCommand());
 program.addCommand(createCampaignCommand());
 program.addCommand(createInternalCommand());
+program.addCommand(createServeCommand());
 
 // Error handling
 program.exitOverride((err) => {
