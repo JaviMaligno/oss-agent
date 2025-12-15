@@ -177,7 +177,34 @@ tests/                          # Test files
     └── config.test.ts         # Config validation tests
 ```
 
-### Planned Structure (Phase 7 - Future)
+### MCP Server Structure (Phase 7.3)
+
+```
+src/mcp/                        # MCP Server Mode
+├── index.ts                   # Module exports
+├── server.ts                  # MCP Server implementation
+├── types.ts                   # MCP-specific types
+├── hardening.ts               # Circuit breaker & watchdog integration
+├── transports/
+│   ├── stdio-transport.ts     # Stdio transport (Claude Desktop/Code)
+│   └── http-transport.ts      # HTTP/SSE transport
+├── tools/
+│   ├── index.ts               # Tool registry
+│   ├── workflow-tools.ts      # work_on_issue, iterate, resume, watch
+│   ├── discovery-tools.ts     # discover_projects, suggest_issues
+│   ├── queue-tools.ts         # queue_list, add, remove, prioritize, clear
+│   ├── autonomous-tools.ts    # run_autonomous, work_parallel, cancel, status
+│   ├── monitoring-tools.ts    # get_pr_status, get_session_history, get_status
+│   └── management-tools.ts    # get_config, update_config, cleanup_worktrees
+├── resources/
+│   └── index.ts               # Resource registry (config://, state://, queue://)
+└── middleware/
+    ├── auth.ts                # API key authentication
+    ├── rate-limit.ts          # Request throttling
+    └── error-handler.ts       # Error mapping to MCP errors
+```
+
+### Planned Structure (Future)
 
 ```
 src/
@@ -187,11 +214,8 @@ src/
 ├── oss/
 │   └── quality/               # OSS quality gates (enhanced)
 │
-├── b2b/
-│   └── reporting/             # Reports and analytics engine
-│
-└── api/                        # MCP Server Mode (optional)
-    └── mcp-server.ts          # Expose agent capabilities as MCP tools
+└── b2b/
+    └── reporting/             # Reports and analytics engine
 ```
 
 ---
@@ -829,3 +853,151 @@ export interface Plugin {
 ```
 
 This would allow third-party integrations without modifying core code.
+
+---
+
+## MCP Server Mode Detail
+
+The MCP (Model Context Protocol) server exposes oss-agent capabilities as tools for Claude Desktop, Claude Code, or other MCP-compatible clients.
+
+### Usage
+
+```bash
+# Stdio mode (for Claude Desktop/Code integration)
+oss-agent serve --stdio
+
+# HTTP mode (for remote access)
+oss-agent serve --http --port 3000
+
+# HTTP with authentication
+oss-agent serve --http --port 3000 --api-key "sk-your-key"
+
+# Both transports
+oss-agent serve --stdio --http --port 3000
+```
+
+### MCP Tools (19 total)
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Workflow** | `work_on_issue` | Complete issue→PR workflow |
+| | `iterate_on_feedback` | Address PR review feedback |
+| | `resume_session` | Resume interrupted session |
+| | `watch_prs` | Monitor PRs, auto-iterate |
+| **Discovery** | `discover_projects` | Find OSS projects |
+| | `suggest_issues` | Suggest issues to work on |
+| **Queue** | `queue_list` | List queued issues |
+| | `queue_add` | Add issue to queue |
+| | `queue_remove` | Remove from queue |
+| | `queue_prioritize` | Change priority |
+| | `queue_clear` | Clear entire queue |
+| **Autonomous** | `run_autonomous` | Autonomous mode |
+| | `work_parallel` | Parallel issue work |
+| | `cancel_work` | Cancel work on issue |
+| | `parallel_status` | Show parallel status |
+| **Monitoring** | `get_pr_status` | PR details with feedback |
+| | `get_session_history` | Session list |
+| | `get_status` | System status & health |
+| **Management** | `get_config` | Read configuration |
+| | `update_config` | Update configuration |
+| | `cleanup_worktrees` | Clean old worktrees |
+
+### MCP Resources
+
+| URI Pattern | Description |
+|-------------|-------------|
+| `config://current` | Current configuration |
+| `config://defaults` | Default configuration values |
+| `state://issues` | Query issues by state |
+| `state://sessions` | Query sessions |
+| `queue://current` | Queue contents |
+| `queue://stats` | Queue statistics |
+
+### Hardening (`mcp/hardening.ts`)
+
+Long-running tools are wrapped with resilience patterns:
+
+```typescript
+// Circuit breaker prevents cascading failures
+const hardenedHandler = hardenToolHandler("work_on_issue", handler, {
+  circuitBreakerEnabled: true,
+  watchdogEnabled: true,
+  circuitBreaker: {
+    failureThreshold: 3,     // Open after 3 failures
+    successThreshold: 2,     // Close after 2 successes
+    openDurationMs: 60000,   // Stay open for 1 minute
+  },
+  toolTimeouts: {
+    work_on_issue: 600000,   // 10 minutes
+    run_autonomous: 1800000, // 30 minutes
+  },
+});
+
+// Get health status
+const healthy = isMCPHealthy();           // true if all circuits closed
+const status = getMCPCircuitStatus();     // Per-tool circuit states
+
+// Reset all circuits
+resetAllMCPCircuits();
+```
+
+### HTTP Transport Features
+
+- **Authentication**: API key via `Authorization: Bearer <key>` header
+- **Rate Limiting**: Sliding window algorithm, per-client tracking
+- **CORS**: Configurable origins with wildcard support
+- **Health Endpoints**: `/health`, `/ready`, `/stats`
+
+### Configuration
+
+```yaml
+# In ~/.oss-agent/config.json
+{
+  "mcp": {
+    "enabled": true,
+    "transports": {
+      "stdio": { "enabled": true },
+      "http": {
+        "enabled": true,
+        "port": 3000,
+        "host": "127.0.0.1",
+        "requireAuth": true,
+        "cors": {
+          "enabled": true,
+          "origins": ["http://localhost:*"]
+        }
+      }
+    },
+    "auth": {
+      "apiKeys": ["sk-your-key"],
+      "apiKeysFile": "~/.oss-agent/api-keys.txt"
+    },
+    "rateLimit": {
+      "enabled": true,
+      "maxRequestsPerMinute": 60,
+      "maxConcurrentOps": 3
+    },
+    "tools": {
+      "disabled": ["run_autonomous"],
+      "timeouts": {
+        "work_on_issue": 600000
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop Integration
+
+Add to `~/.config/claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "oss-agent": {
+      "command": "oss-agent",
+      "args": ["serve", "--stdio"]
+    }
+  }
+}
+```
