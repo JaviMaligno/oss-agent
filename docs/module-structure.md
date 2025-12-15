@@ -45,7 +45,7 @@ This document defines the modular architecture of the OSS Contribution Agent. Th
 
 ## Directory Structure
 
-### Current Implementation (as of Phase 4)
+### Current Implementation (as of Phase 6)
 
 ```
 src/
@@ -64,8 +64,14 @@ src/
 │       ├── history.ts         # oss-agent history
 │       ├── resume.ts          # oss-agent resume <session>
 │       ├── cleanup.ts         # oss-agent cleanup
-│       ├── discover.ts        # oss-agent discover (Phase 4)
-│       └── suggest.ts         # oss-agent suggest (Phase 4)
+│       ├── discover.ts        # oss-agent discover
+│       ├── suggest.ts         # oss-agent suggest
+│       ├── queue.ts           # oss-agent queue
+│       ├── run.ts             # oss-agent run (autonomous)
+│       ├── work-parallel.ts   # oss-agent work-parallel
+│       ├── parallel-status.ts # oss-agent parallel-status
+│       ├── cancel.ts          # oss-agent cancel
+│       └── campaign.ts        # oss-agent campaign (Phase 6)
 │
 ├── core/                       # Shared core modules
 │   ├── ai/                    # AI Provider abstraction
@@ -85,10 +91,27 @@ src/
 │   ├── github/                # GitHub API operations
 │   │   └── repo-service.ts    # Fork management, permissions
 │   │
+│   ├── providers/             # Provider abstraction layer (Phase 6)
+│   │   ├── index.ts           # Module exports
+│   │   ├── factory.ts         # Provider factory with auto-detection
+│   │   ├── url-parser.ts      # Multi-platform URL parsing
+│   │   ├── repository/        # Repository providers
+│   │   │   ├── index.ts       # Repository provider exports
+│   │   │   ├── types.ts       # RepositoryProvider interface
+│   │   │   ├── github.ts      # GitHub provider (gh CLI)
+│   │   │   ├── github-enterprise.ts # GitHub Enterprise provider
+│   │   │   └── gitlab.ts      # GitLab provider (glab CLI + REST)
+│   │   └── issue-source/      # Issue source providers
+│   │       ├── index.ts       # Issue source exports
+│   │       ├── types.ts       # IssueSourceProvider interface
+│   │       ├── github.ts      # GitHub Issues provider
+│   │       ├── jira.ts        # Jira provider (REST API)
+│   │       └── linear.ts      # Linear provider (GraphQL API)
+│   │
 │   └── state/                 # State persistence
-│       └── state-manager.ts   # SQLite-based state (issues, sessions, etc.)
+│       └── state-manager.ts   # SQLite-based state (issues, sessions, campaigns)
 │
-├── oss/                        # OSS-specific modules (Phase 4)
+├── oss/                        # OSS-specific modules
 │   ├── discovery/             # Project discovery
 │   │   ├── index.ts           # Module exports
 │   │   └── discovery-service.ts # Find and score projects
@@ -96,6 +119,13 @@ src/
 │   └── selection/             # Issue selection
 │       ├── index.ts           # Module exports
 │       └── selection-service.ts # Find, filter, and score issues
+│
+├── b2b/                        # B2B-specific modules (Phase 6)
+│   ├── index.ts               # Module exports
+│   └── campaigns/             # Campaign management
+│       ├── index.ts           # Campaign exports
+│       ├── campaign-service.ts # Campaign CRUD, issue management
+│       └── campaign-runner.ts # Campaign execution orchestration
 │
 ├── infra/                      # Infrastructure utilities
 │   ├── logger.ts              # Structured logging with colors
@@ -106,43 +136,40 @@ src/
     ├── issue.ts               # Issue, IssueState, GitHubIssueInfo
     ├── project.ts             # Project, ProjectScore types
     ├── session.ts             # Session types
-    └── config.ts              # Config types with zod schemas
+    ├── config.ts              # Config types with zod schemas
+    ├── campaign.ts            # Campaign types and state machine (Phase 6)
+    └── providers.ts           # Provider types (Phase 6)
 
 tests/                          # Test files
 ├── core/
 │   ├── ai-provider.test.ts    # AI provider tests
 │   ├── feedback-parser.test.ts # Feedback parsing tests
 │   ├── git-operations.test.ts # Git operations tests
-│   └── state-manager.test.ts  # State manager tests
+│   ├── state-manager.test.ts  # State manager tests
+│   └── providers.test.ts      # Provider URL parsing tests (Phase 6)
+├── b2b/
+│   └── campaign-service.test.ts # Campaign service tests (Phase 6)
 ├── infra/
 │   └── logger.test.ts         # Logger tests
 └── types/
     └── config.test.ts         # Config validation tests
 ```
 
-### Planned Structure (Future Phases)
+### Planned Structure (Phase 7 - Future)
 
 ```
 src/
 ├── cli/commands/
-│   ├── oss/                   # OSS-specific commands (Phase 4)
-│   │   ├── discover.ts        # oss-agent discover
-│   │   ├── suggest.ts         # oss-agent suggest
-│   │   ├── queue.ts           # oss-agent queue
-│   │   └── run.ts             # oss-agent run (autonomous)
-│   └── b2b/                   # B2B-specific commands (Phase 6)
-│       ├── campaign.ts        # oss-agent campaign
-│       └── report.ts          # oss-agent report
+│   └── report.ts              # oss-agent report (analytics)
 │
-├── oss/                        # OSS-specific modules (Phase 4-5)
-│   ├── discovery/             # Project discovery
-│   ├── selection/             # Issue selection
-│   └── quality/               # OSS quality gates
+├── oss/
+│   └── quality/               # OSS quality gates (enhanced)
 │
-└── b2b/                        # B2B-specific modules (Phase 6)
-    ├── integrations/          # Jira, Linear, Sentry
-    ├── campaigns/             # Campaign management
-    └── reporting/             # Reports and analytics
+├── b2b/
+│   └── reporting/             # Reports and analytics engine
+│
+└── api/                        # MCP Server Mode (optional)
+    └── mcp-server.ts          # Expose agent capabilities as MCP tools
 ```
 
 ---
@@ -389,55 +416,92 @@ export interface SelectionConfig {
 
 ## B2B Modules Detail
 
-### 1. Integrations (`b2b/integrations/`)
+### 1. Provider Abstraction (`core/providers/`)
 
-Connect to external issue sources.
+Multi-platform support through provider interfaces.
 
 ```typescript
-// interface.ts - Common interface for all issue sources
-export interface IssueSource {
-  name: string;
-  fetchIssues(query: IssueQuery): Promise<Issue[]>;
-  updateIssue(id: string, update: IssueUpdate): Promise<void>;
-  linkPR(issueId: string, prUrl: string): Promise<void>;
+// repository/types.ts - Repository provider interface
+export interface RepositoryProvider {
+  info: ProviderInfo;
+  capabilities: RepositoryCapabilities;
+
+  // Availability
+  isAvailable(): Promise<boolean>;
+  testConnection(): Promise<ConnectionTestResult>;
+
+  // URL handling
+  canHandleUrl(url: string): boolean;
+  parseUrl(url: string): ParsedUrl | null;
+
+  // Repository operations
+  cloneRepository(url: string, targetDir: string): Promise<void>;
+  createBranch(repoPath: string, branchName: string): Promise<void>;
+  createPR(options: CreatePROptions): Promise<PRResult>;
+  getPR(prUrl: string): Promise<PRInfo | null>;
 }
 
-// jira/client.ts
-export class JiraIssueSource implements IssueSource {
-  // Implementation using Jira REST API
-}
+// issue-source/types.ts - Issue source provider interface
+export interface IssueSourceProvider {
+  info: ProviderInfo;
+  capabilities: IssueSourceCapabilities;
 
-// linear/client.ts
-export class LinearIssueSource implements IssueSource {
-  // Implementation using Linear API
+  // Issue operations
+  getIssue(issueRef: string): Promise<ProviderIssue | null>;
+  queryIssues(projectKey: string, options?: IssueQueryOptions): Promise<IssueQueryResult>;
+  addComment(issueRef: string, body: string): Promise<void>;
+  transitionIssue(issueRef: string, transitionId: string): Promise<boolean>;
+  linkToPR(issueRef: string, prUrl: string): Promise<void>;
 }
 ```
 
-### 2. Campaign Manager (`b2b/campaigns/`)
+**Implemented Providers:**
+- **Repository**: GitHub, GitHub Enterprise, GitLab
+- **Issue Source**: GitHub Issues, Jira (REST API), Linear (GraphQL)
 
-Batch operations on multiple issues.
+### 2. Campaign Service (`b2b/campaigns/`)
+
+Campaign lifecycle management and issue processing.
 
 ```typescript
-// campaign-manager.ts
-export interface CampaignManager {
-  create(config: CampaignConfig): Promise<Campaign>;
-  run(campaignId: string): Promise<CampaignResult>;
-  pause(campaignId: string): Promise<void>;
-  resume(campaignId: string): Promise<void>;
-  getStatus(campaignId: string): Promise<CampaignStatus>;
+// campaign-service.ts
+export class CampaignService {
+  // CRUD operations
+  createCampaign(options: CreateCampaignOptions): Campaign;
+  getCampaign(id: string): Campaign | null;
+  listCampaigns(filters?: CampaignFilters): Campaign[];
+  deleteCampaign(id: string): void;
+
+  // Status transitions (with state machine validation)
+  startCampaign(id: string, triggeredBy?: string): void;
+  pauseCampaign(id: string, triggeredBy?: string, reason?: string): void;
+  resumeCampaign(id: string, triggeredBy?: string): void;
+  completeCampaign(id: string, triggeredBy?: string): void;
+  cancelCampaign(id: string, triggeredBy?: string, reason?: string): void;
+
+  // Issue management
+  addIssues(campaignId: string, issues: CampaignIssueInput[]): number;
+  removeIssues(campaignId: string, issueUrls: string[]): number;
+  updateIssueStatus(campaignId: string, issueUrl: string, status: CampaignIssueStatus, updates?: IssueStatusUpdates): void;
+  getNextIssue(campaignId: string): CampaignIssue | null;
+
+  // Progress & budget
+  getProgress(campaignId: string): CampaignProgress | null;
+  isOverBudget(campaignId: string): boolean;
 }
 
-export interface CampaignConfig {
-  name: string;
-  issueSource: IssueSource;
-  query: IssueQuery;
-  limits: {
-    maxIssues: number;
-    maxBudget: number;
-    maxParallel: number;
-  };
-  schedule?: CampaignSchedule;
+// campaign-runner.ts
+export class CampaignRunner {
+  run(campaignId: string, options?: RunOptions): Promise<RunResult>;
+  // Processes issues, tracks progress, respects budget limits
 }
+```
+
+**Campaign Status Lifecycle:**
+```
+draft → active → paused → active → completed
+  ↓       ↓        ↓
+cancelled  cancelled  cancelled
 ```
 
 ---
