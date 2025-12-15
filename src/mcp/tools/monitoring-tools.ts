@@ -11,6 +11,7 @@ import type { RegisteredTool, ToolHandler } from "./index.js";
 import { PRService } from "../../core/github/pr-service.js";
 import { FeedbackParser } from "../../core/github/feedback-parser.js";
 import { BudgetManager } from "../../core/engine/budget-manager.js";
+import { getMCPCircuitStatus, isMCPHealthy } from "../hardening.js";
 import { logger } from "../../infra/logger.js";
 
 export interface MonitoringToolsOptions {
@@ -344,6 +345,10 @@ function createGetStatusTool(config: Config, stateManager: StateManager): Regist
             aiMode: config.ai.executionMode,
             maxConcurrentAgents: config.parallel.maxConcurrentAgents,
             maxPrsPerDay: config.oss?.qualityGates?.maxPrsPerDay ?? 10,
+          },
+          hardening: {
+            healthy: isMCPHealthy(),
+            circuitBreakers: getMCPCircuitStatus(),
           },
         },
       };

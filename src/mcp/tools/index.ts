@@ -2,6 +2,8 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Config } from "../../types/config.js";
 import type { StateManager } from "../../core/state/state-manager.js";
 import type { MCPContext, ToolResult } from "../types.js";
+import { hardenToolHandler, type MCPHardeningConfig } from "../hardening.js";
+import { logger } from "../../infra/logger.js";
 
 // Import tool modules
 import { createWorkflowTools } from "./workflow-tools.js";
@@ -14,6 +16,10 @@ import { createManagementTools } from "./management-tools.js";
 export interface ToolRegistryOptions {
   config: Config;
   stateManager: StateManager;
+  /** Enable hardening (circuit breakers, watchdogs). Defaults to true. */
+  hardeningEnabled?: boolean;
+  /** Custom hardening configuration */
+  hardeningConfig?: Partial<MCPHardeningConfig>;
 }
 
 export type ToolHandler = (
@@ -33,49 +39,86 @@ export interface ToolRegistry {
 }
 
 /**
+ * Long-running tools that benefit from hardening (circuit breakers + watchdogs)
+ */
+const HARDENED_TOOLS = new Set([
+  "work_on_issue",
+  "iterate_on_feedback",
+  "resume_session",
+  "watch_prs",
+  "run_autonomous",
+  "work_parallel",
+  "discover_projects",
+  "suggest_issues",
+]);
+
+/**
+ * Wrap a tool handler with hardening if appropriate
+ */
+function maybeHarden(
+  tool: RegisteredTool,
+  hardeningEnabled: boolean,
+  hardeningConfig?: Partial<MCPHardeningConfig>
+): RegisteredTool {
+  // Only harden long-running tools
+  if (!hardeningEnabled || !HARDENED_TOOLS.has(tool.definition.name)) {
+    return tool;
+  }
+
+  logger.debug(`Applying hardening to tool: ${tool.definition.name}`);
+
+  return {
+    definition: tool.definition,
+    handler: hardenToolHandler(tool.definition.name, tool.handler, hardeningConfig),
+  };
+}
+
+/**
  * Create a tool registry with all MCP tools
  */
 export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
   const tools = new Map<string, RegisteredTool>();
+  const hardeningEnabled = options.hardeningEnabled ?? true;
+  const hardeningConfig = options.hardeningConfig;
 
   // Register workflow tools (Phase 3 - implemented)
   const workflowTools = createWorkflowTools(options);
   for (const tool of workflowTools) {
-    tools.set(tool.definition.name, tool);
+    tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
   }
 
   // Register discovery tools (Phase 4 - implemented)
   const discoveryTools = createDiscoveryTools(options);
   for (const tool of discoveryTools) {
-    tools.set(tool.definition.name, tool);
+    tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
   }
 
   // Register queue tools (Phase 4 - implemented)
   const queueTools = createQueueTools(options);
   for (const tool of queueTools) {
-    tools.set(tool.definition.name, tool);
+    tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
   }
 
   // Register autonomous tools (Phase 5 - implemented)
   const autonomousTools = createAutonomousTools(options);
   for (const tool of autonomousTools) {
-    tools.set(tool.definition.name, tool);
+    tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
   }
 
   // Register monitoring tools (Phase 5 - implemented)
   const monitoringTools = createMonitoringTools(options);
   for (const tool of monitoringTools) {
-    tools.set(tool.definition.name, tool);
+    tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
   }
 
   // Register management tools (Phase 5 - implemented)
   const managementTools = createManagementTools(options);
   for (const tool of managementTools) {
-    tools.set(tool.definition.name, tool);
+    tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
   }
 
   // Register placeholder tools for remaining tools
-  registerPlaceholderTools(tools, options);
+  registerPlaceholderTools(tools, options, hardeningEnabled, hardeningConfig);
 
   return {
     listTools(): Tool[] {
@@ -99,7 +142,9 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
  */
 function registerPlaceholderTools(
   tools: Map<string, RegisteredTool>,
-  _options: ToolRegistryOptions
+  _options: ToolRegistryOptions,
+  _hardeningEnabled: boolean,
+  _hardeningConfig?: Partial<MCPHardeningConfig>
 ): void {
   const placeholderHandler: ToolHandler = async () => ({
     success: false,
