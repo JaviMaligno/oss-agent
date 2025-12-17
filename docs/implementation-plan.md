@@ -28,13 +28,13 @@ The core engine is shared between both modes, with specialized modules for each 
 
 ### Tasks
 
-- [x] Initialize TypeScript project with strict configuration
-- [x] Set up ESLint, Prettier, and pre-commit hooks
-- [x] Configure testing framework (Vitest)
-- [x] Set up project structure following module-structure.md
-- [x] Create basic CLI skeleton with Commander.js
-- [x] Set up environment variable handling (dotenv + zod validation)
-- [x] Initialize git repository with conventional commits
+- [X] Initialize TypeScript project with strict configuration
+- [X] Set up ESLint, Prettier, and pre-commit hooks
+- [X] Configure testing framework (Vitest)
+- [X] Set up project structure following module-structure.md
+- [X] Create basic CLI skeleton with Commander.js
+- [X] Set up environment variable handling (dotenv + zod validation)
+- [X] Initialize git repository with conventional commits
 
 ### Deliverables
 
@@ -76,47 +76,49 @@ oss-agent/
 
 #### 1.1 AI Provider Abstraction
 
-- [x] Define `AIProvider` interface
-- [x] Implement `ClaudeCLIProvider` using Claude CLI (`--print` mode)
-- [x] Basic prompt construction for code tasks
-- [x] Cost tracking per query (partial - turns tracked, cost not reported by CLI)
+- [X] Define `AIProvider` interface
+- [X] Implement `ClaudeCLIProvider` using Claude CLI (`--print` mode)
+- [X] Basic prompt construction for code tasks
+- [X] Cost tracking per query (partial - turns tracked, cost not reported by CLI)
 
 #### 1.2 Git Operations Manager
 
-- [x] Clone/fetch repository
-- [x] Branch creation with naming conventions
-- [x] Commit with conventional commit format
-- [x] Git worktree support for isolated work
-- [x] Fork detection and auto-forking for upstream repos
+- [X] Clone/fetch repository
+- [X] Branch creation with naming conventions
+- [X] Commit with conventional commit format
+- [X] Git worktree support for isolated work
+- [X] Fork detection and auto-forking for upstream repos
 
 #### 1.3 Contribution Engine (MVP)
 
-- [x] Issue parsing (extract title, body, labels from URL)
-- [x] Implementation prompt generation
-- [x] Code modification execution via Claude CLI
-- [x] Quality gates (max files, max lines changed)
+- [X] Issue parsing (extract title, body, labels from URL)
+- [X] Implementation prompt generation
+- [X] Code modification execution via Claude CLI
+- [X] Quality gates (max files, max lines changed)
 
 #### 1.4 PR Creation
 
-- [x] Generate PR title and description from issue
-- [x] Create PR via GitHub CLI (`gh`)
-- [x] Link PR to issue
-- [x] Fork-based PR creation (user:branch format)
+- [X] Generate PR title and description from issue
+- [X] Create PR via GitHub CLI (`gh`)
+- [X] Link PR to issue
+- [X] Fork-based PR creation (user:branch format)
 
 #### 1.5 CLI Commands (Phase 1)
 
-- [x] `oss-agent work <issue-url>` - Full flow for single issue
-- [x] `oss-agent config` - View/edit configuration
-- [x] Basic progress output during execution (step indicators)
+- [X] `oss-agent work <issue-url>` - Full flow for single issue
+- [X] `oss-agent config` - View/edit configuration
+- [X] Basic progress output during execution (step indicators)
 
 ### Deliverables
 
 Working command:
+
 ```bash
 oss-agent work https://github.com/owner/repo/issues/123
 ```
 
 That:
+
 1. Clones/fetches the repo
 2. Reads the issue
 3. Uses Claude to implement a fix
@@ -145,30 +147,30 @@ That:
 
 #### 2.1 State Persistence
 
-- [x] Choose storage (SQLite via better-sqlite3 for simplicity)
-- [x] Define schema: projects, issues, sessions, issue_transitions, issue_work_records
-- [x] Implement StateManager class
-- [x] Track issue state transitions with full audit trail
+- [X] Choose storage (SQLite via better-sqlite3 for simplicity)
+- [X] Define schema: projects, issues, sessions, issue_transitions, issue_work_records
+- [X] Implement StateManager class
+- [X] Track issue state transitions with full audit trail
 
 #### 2.2 Budget Manager
 
-- [x] Per-issue budget limits (via config)
-- [x] Budget configuration in config file
-- [x] Daily/monthly budget tracking (StateManager + BudgetManager)
-- [x] Hard stop at budget threshold (IssueProcessor + AutonomousRunner)
+- [X] Per-issue budget limits (via config)
+- [X] Budget configuration in config file
+- [X] Daily/monthly budget tracking (StateManager + BudgetManager)
+- [X] Hard stop at budget threshold (IssueProcessor + AutonomousRunner)
 
 #### 2.3 Session Management
 
-- [x] Save session state for resume capability
-- [x] Session history and cost breakdown
-- [x] Work records tracking (branch, worktree, PR)
+- [X] Save session state for resume capability
+- [X] Session history and cost breakdown
+- [X] Work records tracking (branch, worktree, PR)
 
 #### 2.4 CLI Commands (Phase 2)
 
-- [x] `oss-agent status` - Show current state, active sessions
-- [x] `oss-agent history` - List past operations
-- [x] `oss-agent resume <session-id>` - Resume interrupted work
-- [x] `oss-agent cleanup` - Clean up completed/failed worktrees
+- [X] `oss-agent status` - Show current state, active sessions
+- [X] `oss-agent history` - List past operations
+- [X] `oss-agent resume <session-id>` - Resume interrupted work
+- [X] `oss-agent cleanup` - Clean up completed/failed worktrees
 
 ### Deliverables
 
@@ -200,34 +202,34 @@ That:
 
 #### 3.1 Claude Code Hooks Integration
 
-- [x] Create hook scripts directory structure (`.claude/hooks/`)
-- [x] Implement `session-start.sh` - Inject feedback on resume
-- [x] Implement `stop.sh` - Capture PR creation, save state
-- [x] Implement `session-end.sh` - Save session state
-- [x] Configure hooks in `.claude/settings.json`
-- [x] Internal CLI commands for hooks (`internal get-session-context`, `internal register-pr`, etc.)
+- [X] Create hook scripts directory structure (`.claude/hooks/`)
+- [X] Implement `session-start.sh` - Inject feedback on resume
+- [X] Implement `stop.sh` - Capture PR creation, save state
+- [X] Implement `session-end.sh` - Save session state
+- [X] Configure hooks in `.claude/settings.json`
+- [X] Internal CLI commands for hooks (`internal get-session-context`, `internal register-pr`, etc.)
 
 #### 3.2 Feedback Monitor Service
 
-- [x] Feedback parser for PR comments (FeedbackParser class)
-- [x] Classify feedback type (approval, changes_requested, comment, automated)
-- [x] Detect automated feedback (Sourcery, CodeRabbit, dependabot, etc.)
-- [x] PR monitoring via PRService and StateManager (`monitored_prs` table)
-- [x] `oss-agent prs` command to list and check monitored PRs
+- [X] Feedback parser for PR comments (FeedbackParser class)
+- [X] Classify feedback type (approval, changes_requested, comment, automated)
+- [X] Detect automated feedback (Sourcery, CodeRabbit, dependabot, etc.)
+- [X] PR monitoring via PRService and StateManager (`monitored_prs` table)
+- [X] `oss-agent prs` command to list and check monitored PRs
 
 #### 3.3 Feedback Response Engine ✅
 
-- [x] Parse feedback into actionable items (FeedbackParser.parse() → ActionableFeedback[])
-- [x] Generate fix prompt from feedback (IterationHandler.buildIterationPrompt() + FeedbackParser.formatForPrompt())
-- [x] Apply fixes and push (IterationHandler.iterate() - AI execution, commit, push)
-- [x] Iteration limits and guards (via config maxIterations)
+- [X] Parse feedback into actionable items (FeedbackParser.parse() → ActionableFeedback[])
+- [X] Generate fix prompt from feedback (IterationHandler.buildIterationPrompt() + FeedbackParser.formatForPrompt())
+- [X] Apply fixes and push (IterationHandler.iterate() - AI execution, commit, push)
+- [X] Iteration limits and guards (via config maxIterations)
 
 #### 3.4 CLI Commands (Phase 3)
 
-- [x] `oss-agent watch` - Start feedback monitor (placeholder)
-- [x] `oss-agent iterate <pr-url>` - Process PR feedback and iterate
-- [x] `oss-agent prs` - List PRs being monitored
-- [x] `oss-agent internal` - Hidden commands for hooks integration
+- [X] `oss-agent watch` - Start feedback monitor (placeholder)
+- [X] `oss-agent iterate <pr-url>` - Process PR feedback and iterate
+- [X] `oss-agent prs` - List PRs being monitored
+- [X] `oss-agent internal` - Hidden commands for hooks integration
 
 ### Deliverables
 
@@ -259,49 +261,49 @@ That:
 
 #### 4.1 Project Discovery Service ✅
 
-- [x] Direct mode: Work with explicit repo list
-- [x] Search mode: GitHub search by criteria (language, stars, topics)
-- [x] Project health scoring (response time, merge rate, activity)
-- [x] Automated feedback tool detection
+- [X] Direct mode: Work with explicit repo list
+- [X] Search mode: GitHub search by criteria (language, stars, topics)
+- [X] Project health scoring (response time, merge rate, activity)
+- [X] Automated feedback tool detection
 
 #### 4.2 Issue Selection Service ✅
 
-- [x] Filter modes: unassigned_no_pr, all_open, custom
-- [x] Issue scoring algorithm
-- [x] "Good first issue" prioritization
-- [x] Conflict detection - pre-flight analysis of issue scope (ConflictDetector class)
-- [x] Conflict detection - runtime check against in-progress issues
+- [X] Filter modes: unassigned_no_pr, all_open, custom
+- [X] Issue scoring algorithm
+- [X] "Good first issue" prioritization
+- [X] Conflict detection - pre-flight analysis of issue scope (ConflictDetector class)
+- [X] Conflict detection - runtime check against in-progress issues
 
 #### 4.3 Fork Management ✅
 
-- [x] RepoService for GitHub operations (checkPermissions, forkRepo, getCurrentUser)
-- [x] Automatic fork detection (check push permissions)
-- [x] Auto-forking when user lacks push access
-- [x] Clone with fork support (upstream + fork remotes)
-- [x] Push to fork remote
-- [x] PR creation with fork owner prefix (user:branch)
+- [X] RepoService for GitHub operations (checkPermissions, forkRepo, getCurrentUser)
+- [X] Automatic fork detection (check push permissions)
+- [X] Auto-forking when user lacks push access
+- [X] Clone with fork support (upstream + fork remotes)
+- [X] Push to fork remote
+- [X] PR creation with fork owner prefix (user:branch)
 
 #### 4.4 Queue Management
 
-- [x] Issue queue with priorities (queue command with prioritize subcommand)
-- [x] Rate limiting enforcement (RateLimiter class - max PRs per project per day)
-- [x] Automatic queue replenishment (QueueManager class)
-- [x] Queue configuration (minQueueSize, targetQueueSize, autoReplenish)
+- [X] Issue queue with priorities (queue command with prioritize subcommand)
+- [X] Rate limiting enforcement (RateLimiter class - max PRs per project per day)
+- [X] Automatic queue replenishment (QueueManager class)
+- [X] Queue configuration (minQueueSize, targetQueueSize, autoReplenish)
 
 #### 4.5 Discovery Filters & Modes
 
-- [x] Domain categories (ai-ml, cybersecurity, devtools, frontend, backend, etc.)
-- [x] Framework filter (pytorch, fastapi, react, etc.)
-- [x] Curated list parsing (awesome-* lists)
-- [x] Enhanced automated feedback tool detection (13+ tools)
-- [x] Intelligent mode with AI agent (natural language queries via --intelligent --query)
+- [X] Domain categories (ai-ml, cybersecurity, devtools, frontend, backend, etc.)
+- [X] Framework filter (pytorch, fastapi, react, etc.)
+- [X] Curated list parsing (awesome-* lists)
+- [X] Enhanced automated feedback tool detection (13+ tools)
+- [X] Intelligent mode with AI agent (natural language queries via --intelligent --query)
 
 #### 4.6 CLI Commands (Phase 4)
 
-- [x] `oss-agent discover` - Find projects matching criteria
-- [x] `oss-agent suggest` - Suggest issues to work on
-- [x] `oss-agent queue` - Show/manage issue queue (list, add, skip, prioritize, clear)
-- [x] `oss-agent run` - Autonomous mode (work through queue with rate limiting, conflict detection, auto-replenishment)
+- [X] `oss-agent discover` - Find projects matching criteria
+- [X] `oss-agent suggest` - Suggest issues to work on
+- [X] `oss-agent queue` - Show/manage issue queue (list, add, skip, prioritize, clear)
+- [X] `oss-agent run` - Autonomous mode (work through queue with rate limiting, conflict detection, auto-replenishment)
 
 ### Deliverables
 
@@ -331,23 +333,23 @@ That:
 
 #### 5.1 Worktree Manager
 
-- [x] Create worktrees for parallel issue work
-- [x] Branch management per worktree
-- [x] Cleanup completed/failed worktrees
-- [x] Resource tracking per worktree
+- [X] Create worktrees for parallel issue work
+- [X] Branch management per worktree
+- [X] Cleanup completed/failed worktrees
+- [X] Resource tracking per worktree
 
 #### 5.2 Parallel Agent Orchestration
 
-- [x] Semaphore for max concurrent agents
-- [x] Per-project and global limits
-- [x] Conflict detection between parallel issues
-- [x] Aggregate status reporting
+- [X] Semaphore for max concurrent agents
+- [X] Per-project and global limits
+- [X] Conflict detection between parallel issues
+- [X] Aggregate status reporting
 
 #### 5.3 CLI Commands (Phase 5)
 
-- [x] `oss-agent work-parallel --count N` - Work on N issues in parallel
-- [x] `oss-agent parallel-status` - Show parallel work status
-- [x] `oss-agent cancel <issue>` - Cancel specific parallel work
+- [X] `oss-agent work-parallel --count N` - Work on N issues in parallel
+- [X] `oss-agent parallel-status` - Show parallel work status
+- [X] `oss-agent cancel <issue>` - Cancel specific parallel work
 
 ### Deliverables
 
@@ -379,44 +381,44 @@ That:
 
 #### 6.1 Provider Abstraction Layer
 
-- [x] `RepositoryProvider` interface for multi-platform support
-- [x] `IssueSourceProvider` interface for issue tracking systems
-- [x] Provider factory with automatic detection
-- [x] URL parsing for all supported platforms
+- [X] `RepositoryProvider` interface for multi-platform support
+- [X] `IssueSourceProvider` interface for issue tracking systems
+- [X] Provider factory with automatic detection
+- [X] URL parsing for all supported platforms
 
 #### 6.2 Repository Providers
 
-- [x] GitHub provider (base implementation using `gh` CLI)
-- [x] GitHub Enterprise support (custom hostname, API URL)
-- [x] GitLab support (using `glab` CLI + REST API fallback)
-- [x] Bitbucket support (via MCP tools)
+- [X] GitHub provider (base implementation using `gh` CLI)
+- [X] GitHub Enterprise support (custom hostname, API URL)
+- [X] GitLab support (using `glab` CLI + REST API fallback)
+- [X] Bitbucket support (via MCP tools)
 
 #### 6.3 Issue Source Integrations
 
-- [x] GitHub Issues provider
-- [x] Jira integration (REST API, JQL queries, status transitions)
-- [x] Linear integration (GraphQL API, state mapping)
-- [x] Custom issue source interface
+- [X] GitHub Issues provider
+- [X] Jira integration (REST API, JQL queries, status transitions)
+- [X] Linear integration (GraphQL API, state mapping)
+- [X] Custom issue source interface
 
 #### 6.4 Campaign Management
 
-- [x] Campaign CRUD operations
-- [x] Campaign status lifecycle (draft → active → paused → completed/cancelled)
-- [x] Issue queue management with priorities
-- [x] Budget tracking and limits
-- [x] Campaign progress tracking (total, completed, failed issues)
-- [x] Campaign transitions audit log
+- [X] Campaign CRUD operations
+- [X] Campaign status lifecycle (draft → active → paused → completed/cancelled)
+- [X] Issue queue management with priorities
+- [X] Budget tracking and limits
+- [X] Campaign progress tracking (total, completed, failed issues)
+- [X] Campaign transitions audit log
 
 #### 6.5 CLI Commands (Phase 6)
 
-- [x] `oss-agent campaign list` - List all campaigns
-- [x] `oss-agent campaign create <name>` - Create new campaign
-- [x] `oss-agent campaign show <id>` - Show campaign details
-- [x] `oss-agent campaign add-issues <id> <urls...>` - Add issues to campaign
-- [x] `oss-agent campaign start <id>` - Start campaign execution
-- [x] `oss-agent campaign pause <id>` - Pause campaign
-- [x] `oss-agent campaign resume <id>` - Resume paused campaign
-- [x] `oss-agent campaign status <id>` - Show execution progress
+- [X] `oss-agent campaign list` - List all campaigns
+- [X] `oss-agent campaign create <name>` - Create new campaign
+- [X] `oss-agent campaign show <id>` - Show campaign details
+- [X] `oss-agent campaign add-issues <id> <urls...>` - Add issues to campaign
+- [X] `oss-agent campaign start <id>` - Start campaign execution
+- [X] `oss-agent campaign pause <id>` - Pause campaign
+- [X] `oss-agent campaign resume <id>` - Resume paused campaign
+- [X] `oss-agent campaign status <id>` - Show execution progress
 
 ### Deliverables
 
@@ -452,21 +454,28 @@ That:
 - [ ] Real-time progress view
 - [ ] Historical analytics
 
-#### 7.3 MCP Server Mode
+#### 7.3 MCP Server Mode ✅
 
-- [ ] Expose agent capabilities as MCP tools
-- [ ] Integration with other AI systems
+- [X] Expose agent capabilities as MCP tools
+- [X] Integration with other AI systems
+- [X] Stdio transport for Claude Desktop/Code integration
+- [X] HTTP/SSE transport with API key authentication
+- [X] 19 MCP tools across 6 categories (workflow, discovery, queue, autonomous, monitoring, management)
+- [X] 8 MCP resources (config, state, queue)
+- [X] Rate limiting middleware for HTTP transport
+- [X] `oss-agent serve` CLI command with transport selection
+- [X] Circuit breaker and watchdog integration for long-running tools
 
 #### 7.4 Hardening ✅
 
-- [x] Comprehensive error handling (NetworkError, TimeoutError, CircuitOpenError, RateLimitError)
-- [x] Retry logic with exponential backoff and jitter (`src/infra/retry.ts`)
-- [x] Circuit breaker pattern for cascading failure prevention (`src/infra/circuit-breaker.ts`)
-- [x] Watchdog timer for hung AI operations (`src/infra/watchdog.ts`)
-- [x] Health checks for long-running operations (`src/infra/health-check.ts`)
-- [x] Resource cleanup manager with graceful shutdown (`src/infra/cleanup-manager.ts`)
-- [x] Integration into AI providers, git operations, and engine components
-- [x] Unit tests for all hardening infrastructure (91 tests)
+- [X] Comprehensive error handling (NetworkError, TimeoutError, CircuitOpenError, RateLimitError)
+- [X] Retry logic with exponential backoff and jitter (`src/infra/retry.ts`)
+- [X] Circuit breaker pattern for cascading failure prevention (`src/infra/circuit-breaker.ts`)
+- [X] Watchdog timer for hung AI operations (`src/infra/watchdog.ts`)
+- [X] Health checks for long-running operations (`src/infra/health-check.ts`)
+- [X] Resource cleanup manager with graceful shutdown (`src/infra/cleanup-manager.ts`)
+- [X] Integration into AI providers, git operations, and engine components
+- [X] Unit tests for all hardening infrastructure (91 tests)
 
 ### Exit Criteria
 
@@ -478,14 +487,14 @@ That:
 
 ## Milestone Summary
 
-| Milestone | Phases | Key Capability | Status |
-|-----------|--------|----------------|--------|
-| **M1: First PR** | 0-1 | Can create a PR from an issue URL | ✅ Complete |
-| **M2: Reliable Operation** | 2 | Budget control, state persistence, resume | ✅ Complete |
-| **M3: Feedback Loop** | 3 | Iterate on PR feedback automatically | ✅ Complete |
-| **M4: Autonomous OSS** | 4-5 | Discover issues, work in parallel | ✅ Complete |
-| **M5: B2B Ready** | 6 | Private repos, Jira/Linear, campaigns | ✅ Complete |
-| **M6: Production** | 7 | Hardened, documented, polished | 🔜 Pending |
+| Milestone                        | Phases | Key Capability                            | Status      |
+| -------------------------------- | ------ | ----------------------------------------- | ----------- |
+| **M1: First PR**           | 0-1    | Can create a PR from an issue URL         | ✅ Complete |
+| **M2: Reliable Operation** | 2      | Budget control, state persistence, resume | ✅ Complete |
+| **M3: Feedback Loop**      | 3      | Iterate on PR feedback automatically      | ✅ Complete |
+| **M4: Autonomous OSS**     | 4-5    | Discover issues, work in parallel         | ✅ Complete |
+| **M5: B2B Ready**          | 6      | Private repos, Jira/Linear, campaigns     | ✅ Complete |
+| **M6: Production**         | 7      | Hardened, documented, polished            | ✅ Complete |
 
 ---
 
@@ -493,19 +502,19 @@ That:
 
 ### Technical Risks
 
-| Risk | Mitigation |
-|------|------------|
-| Claude Agent SDK limitations | Have fallback to direct API calls |
-| Git conflicts in parallel work | Conservative conflict detection, abort on uncertainty |
-| Rate limiting (GitHub, AI APIs) | Built-in rate limiting, exponential backoff |
+| Risk                            | Mitigation                                            |
+| ------------------------------- | ----------------------------------------------------- |
+| Claude Agent SDK limitations    | Have fallback to direct API calls                     |
+| Git conflicts in parallel work  | Conservative conflict detection, abort on uncertainty |
+| Rate limiting (GitHub, AI APIs) | Built-in rate limiting, exponential backoff           |
 
 ### Product Risks
 
-| Risk | Mitigation |
-|------|------------|
+| Risk                  | Mitigation                                             |
+| --------------------- | ------------------------------------------------------ |
 | PRs perceived as spam | Strict quality gates, limits per repo, "draft PR" mode |
-| Poor PR quality | Test requirement, lint checks, iteration on feedback |
-| Runaway costs | Hard budget stops, per-issue caps, daily limits |
+| Poor PR quality       | Test requirement, lint checks, iteration on feedback   |
+| Runaway costs         | Hard budget stops, per-issue caps, daily limits        |
 
 ---
 
@@ -519,4 +528,6 @@ That:
 6. ~~Complete Phase 4: Issue Discovery & Selection~~ ✅
 7. ~~Complete Phase 5: Parallel Work with Worktrees~~ ✅
 8. ~~Complete Phase 6: B2B Mode~~ ✅
-9. **Next**: Begin Phase 7 (Advanced Features & Polish)
+9. ~~Complete Phase 7.3: MCP Server Mode~~ ✅
+10. ~~Complete Phase 7.4: Hardening~~ ✅
+11. **Next**: Phase 7.1 Proactive Issue Discovery (optional), Phase 7.2 Dashboard (optional)
