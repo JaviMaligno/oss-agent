@@ -38,6 +38,10 @@ export function createDiscoverCommand(): Command {
     )
     .option("--min-stars <n>", "Minimum stars", parseInt)
     .option("--max-stars <n>", "Maximum stars", parseInt)
+    .option("--min-size <n>", "Minimum repo size in KB", parseInt)
+    .option("--max-size <n>", "Maximum repo size in KB", parseInt)
+    .option("--min-issues <n>", "Minimum number of open issues", parseInt)
+    .option("--max-issues <n>", "Maximum number of open issues", parseInt)
     .option("-n, --limit <n>", "Maximum number of projects to return", parseInt, 20)
     .option("-r, --repos <repos...>", "Explicit repos for direct mode (owner/repo)")
     .option("--score", "Show project scores", false)
@@ -70,6 +74,10 @@ interface DiscoverOptions {
   query?: string | undefined;
   minStars?: number | undefined;
   maxStars?: number | undefined;
+  minSize?: number | undefined;
+  maxSize?: number | undefined;
+  minIssues?: number | undefined;
+  maxIssues?: number | undefined;
   limit: number;
   repos?: string[] | undefined;
   score: boolean;
@@ -184,6 +192,10 @@ async function runDiscover(options: DiscoverOptions): Promise<void> {
     minStars: options.minStars ?? ossConfig?.minStars,
     maxStars: options.maxStars ?? ossConfig?.maxStars,
     topics: options.topic,
+    minRepoSizeKB: options.minSize,
+    maxRepoSizeKB: options.maxSize,
+    minOpenIssues: options.minIssues,
+    maxOpenIssues: options.maxIssues,
   });
 
   // Limit results

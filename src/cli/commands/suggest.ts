@@ -15,6 +15,8 @@ export function createSuggestCommand(): Command {
     .option("--exclude-labels <labels...>", "Exclude issues with these labels")
     .option("-n, --limit <n>", "Maximum number of issues to return", parseInt, 10)
     .option("--no-pr-filter", "Include issues that may already have PRs")
+    .option("--include-assigned", "Include issues that are assigned to someone")
+    .option("--include-closed", "Include closed issues (default: open only)")
     .option("--score", "Show issue scores", false)
     .option("--json", "Output as JSON", false)
     .option("-v, --verbose", "Enable verbose output", false)
@@ -39,6 +41,8 @@ interface SuggestOptions {
   excludeLabels?: string[] | undefined;
   limit: number;
   prFilter: boolean;
+  includeAssigned: boolean;
+  includeClosed: boolean;
   score: boolean;
   json: boolean;
   verbose: boolean;
@@ -78,6 +82,14 @@ async function runSuggest(repo: string | undefined, options: SuggestOptions): Pr
     if (options.labels && options.labels.length > 0) {
       logger.info(`Filter labels: ${pc.cyan(options.labels.join(", "))}`);
     }
+    // Show active filters
+    const filters: string[] = [];
+    if (!options.includeClosed) filters.push("open issues only");
+    if (!options.includeAssigned) filters.push("unassigned only");
+    if (options.prFilter) filters.push("no existing PRs");
+    if (filters.length > 0) {
+      logger.info(`Filters: ${pc.dim(filters.join(", "))}`);
+    }
     console.error("");
     logger.info("Finding issues...");
   }
@@ -86,6 +98,8 @@ async function runSuggest(repo: string | undefined, options: SuggestOptions): Pr
     filterLabels: options.labels,
     excludeLabels: options.excludeLabels,
     requireNoExistingPR: options.prFilter,
+    includeAssigned: options.includeAssigned,
+    state: options.includeClosed ? "all" : "open",
     limit: options.limit * 2, // Get more to allow for PR filtering
   });
 

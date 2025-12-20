@@ -516,7 +516,13 @@ export class IssueProcessor {
       !ciResult || ciResult.finalStatus === "success" || ciResult.finalStatus === "no_checks";
 
     if (!options.skipPR && shouldRunReview && prUrl && this.reviewService && ciPassed) {
-      logger.info("Running automated review...");
+      if (ciResult?.selfHealed) {
+        logger.info(
+          "CI passed after self-healing (no code changes needed). Running automated review..."
+        );
+      } else {
+        logger.info("Running automated review...");
+      }
       try {
         const reviewResult = await this.reviewService.review({
           prUrl,

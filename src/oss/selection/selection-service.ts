@@ -10,6 +10,8 @@ export interface SelectionConfig {
   requireNoExistingPR?: boolean | undefined;
   limit?: number | undefined;
   state?: "open" | "closed" | "all" | undefined;
+  /** Include issues that are assigned to someone (default: false) */
+  includeAssigned?: boolean | undefined;
 }
 
 export interface IssueScore {
@@ -62,6 +64,7 @@ export class SelectionService {
         config?.requireNoExistingPR ?? this.ossConfig?.requireNoExistingPR ?? true,
       limit: config?.limit ?? 30,
       state: config?.state ?? "open",
+      includeAssigned: config?.includeAssigned ?? false,
     };
 
     logger.debug(`Finding issues for ${project.fullName}`);
@@ -273,8 +276,10 @@ export class SelectionService {
       );
     }
 
-    // Exclude assigned issues
-    filtered = filtered.filter((issue) => issue.assignees.length === 0);
+    // Exclude assigned issues (unless includeAssigned is true)
+    if (!config.includeAssigned) {
+      filtered = filtered.filter((issue) => issue.assignees.length === 0);
+    }
 
     return filtered;
   }

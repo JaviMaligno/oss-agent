@@ -415,13 +415,31 @@ ${autoFix ? "- AUTO-FIXED: [true|false]" : ""}
     const blockers: string[] = [];
     let summary = "";
 
-    // Extract summary
+    // Extract summary - try multiple formats
     const summaryMatch = output.match(/### SUMMARY\s*\n([\s\S]*?)(?=### |$)/i);
     if (summaryMatch) {
       summary = summaryMatch[1]?.trim() ?? "";
     }
 
-    // Extract blockers
+    // If no SUMMARY section, try to get text after VERDICT
+    if (!summary) {
+      const verdictMatch = output.match(
+        /### VERDICT\s*\n\s*(?:APPROVE|REQUEST_CHANGES)\s*\n([\s\S]*?)(?=---|$)/i
+      );
+      if (verdictMatch) {
+        summary = verdictMatch[1]?.trim() ?? "";
+      }
+    }
+
+    // Still no summary? Use last substantial paragraph
+    if (!summary) {
+      const paragraphs = output.split(/\n\n+/).filter((p) => p.trim().length > 50);
+      if (paragraphs.length > 0) {
+        summary = paragraphs[paragraphs.length - 1]?.trim() ?? "";
+      }
+    }
+
+    // Extract blockers from ### BLOCKERS section
     const blockersMatch = output.match(/### BLOCKERS\s*\n([\s\S]*?)(?=### |$)/i);
     if (blockersMatch) {
       const blockersText = blockersMatch[1]?.trim() ?? "";
@@ -433,43 +451,79 @@ ${autoFix ? "- AUTO-FIXED: [true|false]" : ""}
       }
     }
 
-    // Extract suggestions
-    const suggestionsSection = output.match(/### SUGGESTIONS\s*\n([\s\S]*?)(?=### |$)/i);
-    if (suggestionsSection) {
-      const suggestionBlocks = suggestionsSection[1]?.split(/SUGGESTION:\s*\n/i) ?? [];
-      for (const block of suggestionBlocks) {
-        if (!block.trim()) continue;
-
-        const fileMatch = block.match(/FILE:\s*(.+)/i);
-        const lineMatch = block.match(/LINE:\s*(.+)/i);
-        const severityMatch = block.match(/SEVERITY:\s*(.+)/i);
-        const descMatch = block.match(/DESCRIPTION:\s*(.+)/i);
-        const fixMatch = block.match(/FIX:\s*(.+)/i);
-        const autoFixedMatch = block.match(/AUTO-FIXED:\s*(true|false)/i);
-
-        if (fileMatch && severityMatch && descMatch) {
-          const severityText = severityMatch[1]?.toUpperCase().trim() ?? "MINOR";
-          let severity: ReviewSuggestion["severity"] = "minor";
-          if (severityText === "BLOCKER" || severityText === "CRITICAL") severity = "critical";
-          else if (severityText === "MAJOR") severity = "major";
-          else if (severityText === "NITPICK") severity = "nitpick";
-
-          const lineText = lineMatch?.[1]?.trim();
-          const lineNum = lineText && lineText !== "N/A" ? parseInt(lineText, 10) : undefined;
-
-          suggestions.push({
-            file: fileMatch[1]?.trim() ?? "unknown",
-            line: isNaN(lineNum ?? NaN) ? undefined : lineNum,
-            severity,
-            description: descMatch[1]?.trim() ?? "",
-            suggestedFix: fixMatch?.[1]?.trim(),
-            wasAutoFixed: autoFixedMatch?.[1]?.toLowerCase() === "true",
-          });
+    // Also check verdict for REQUEST_CHANGES - if present, there are blockers
+    const verdictLineMatch = output.match(/### VERDICT\s*\n\s*(APPROVE|REQUEST_CHANGES)/i);
+    if (verdictLineMatch) {
+      const verdict = verdictLineMatch[1]?.toUpperCase();
+      if (verdict === "REQUEST_CHANGES" && blockers.length === 0) {
+        // Extract reason from text after verdict
+        const reasonMatch = output.match(
+          /### VERDICT\s*\n\s*REQUEST_CHANGES\s*\n([\s\S]*?)(?=---|$)/i
+        );
+        if (reasonMatch) {
+          const reason = reasonMatch[1]?.trim();
+          if (reason) {
+            // Take first sentence or first 200 chars as blocker description
+            const firstSentence = reason.match(/^[^.!?]+[.!?]/)?.[0] ?? reason.slice(0, 200);
+            blockers.push(firstSentence.trim());
+          }
         }
       }
     }
 
+    // Extract suggestions - try multiple formats
+    // Format 1: ### SUGGESTIONS section with SUGGESTION: blocks
+    const suggestionsSection = output.match(/### SUGGESTIONS\s*\n([\s\S]*?)(?=### |$)/i);
+    if (suggestionsSection) {
+      this.parseSuggestionBlocks(suggestionsSection[1] ?? "", suggestions);
+    }
+
+    // Format 2: **SUGGESTION:** or SUGGESTION: anywhere in output
+    if (suggestions.length === 0) {
+      this.parseSuggestionBlocks(output, suggestions);
+    }
+
     return { summary, blockers, suggestions };
+  }
+
+  /**
+   * Parse suggestion blocks from text
+   */
+  private parseSuggestionBlocks(text: string, suggestions: ReviewSuggestion[]): void {
+    // Split by SUGGESTION: or **SUGGESTION:**
+    const suggestionBlocks = text.split(/\*?\*?SUGGESTION:?\*?\*?\s*\n/i);
+
+    for (const block of suggestionBlocks) {
+      if (!block.trim()) continue;
+
+      // Match fields with - prefix or without
+      const fileMatch = block.match(/-?\s*FILE:\s*(.+)/i);
+      const lineMatch = block.match(/-?\s*LINE:\s*(.+)/i);
+      const severityMatch = block.match(/-?\s*SEVERITY:\s*(.+)/i);
+      const descMatch = block.match(/-?\s*DESCRIPTION:\s*(.+)/i);
+      const fixMatch = block.match(/-?\s*FIX:\s*(.+)/i);
+      const autoFixedMatch = block.match(/-?\s*AUTO-FIXED:\s*(true|false)/i);
+
+      if (fileMatch && severityMatch && descMatch) {
+        const severityText = severityMatch[1]?.toUpperCase().trim() ?? "MINOR";
+        let severity: ReviewSuggestion["severity"] = "minor";
+        if (severityText === "BLOCKER" || severityText === "CRITICAL") severity = "critical";
+        else if (severityText === "MAJOR") severity = "major";
+        else if (severityText === "NITPICK") severity = "nitpick";
+
+        const lineText = lineMatch?.[1]?.trim();
+        const lineNum = lineText && lineText !== "N/A" ? parseInt(lineText, 10) : undefined;
+
+        suggestions.push({
+          file: fileMatch[1]?.trim() ?? "unknown",
+          line: isNaN(lineNum ?? NaN) ? undefined : lineNum,
+          severity,
+          description: descMatch[1]?.trim() ?? "",
+          suggestedFix: fixMatch?.[1]?.trim(),
+          wasAutoFixed: autoFixedMatch?.[1]?.toLowerCase() === "true",
+        });
+      }
+    }
   }
 
   /**

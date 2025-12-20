@@ -80,6 +80,8 @@ export interface CIHandlerResult {
   finalChecks: PRCheck[];
   /** Summary of what happened */
   summary: string;
+  /** Whether success was achieved without code changes (transient failure self-healed) */
+  selfHealed: boolean;
 }
 
 interface CheckFailureLog {
@@ -125,6 +127,7 @@ export class CICheckHandler {
         totalDuration: 0,
         finalChecks: [],
         summary: "CI check waiting was disabled",
+        selfHealed: false,
       };
     }
 
@@ -174,6 +177,7 @@ export class CICheckHandler {
           totalDuration: Date.now() - startTime,
           finalChecks: [],
           summary: "No CI checks are configured for this repository",
+          selfHealed: false,
         };
       }
 
@@ -192,6 +196,7 @@ export class CICheckHandler {
           totalDuration: Date.now() - startTime,
           finalChecks: checkResult.checks,
           summary: `All ${checkResult.checks.length} CI checks passed`,
+          selfHealed: false,
         };
       }
 
@@ -210,6 +215,7 @@ export class CICheckHandler {
           totalDuration: Date.now() - startTime,
           finalChecks: checkResult.checks,
           summary: `CI checks timed out after ${options.timeoutMs}ms`,
+          selfHealed: false,
         };
       }
 
@@ -232,6 +238,7 @@ export class CICheckHandler {
             totalDuration: Date.now() - startTime,
             finalChecks: checkResult.checks,
             summary: `CI checks failed: ${failedNames}. Auto-fix is disabled.`,
+            selfHealed: false,
           };
         }
 
@@ -294,7 +301,7 @@ export class CICheckHandler {
           });
 
           if (recheckResult.status === "success") {
-            logger.success("CI checks now passing after recheck!");
+            logger.success("CI checks now passing after recheck (self-healed)!");
             iterations.push({
               attempt,
               checkResult: recheckResult,
@@ -306,7 +313,8 @@ export class CICheckHandler {
               iterations,
               totalDuration: Date.now() - startTime,
               finalChecks: recheckResult.checks,
-              summary: `All ${recheckResult.checks.length} CI checks passed (after recheck)`,
+              summary: `All ${recheckResult.checks.length} CI checks passed (self-healed, no code changes needed)`,
+              selfHealed: true,
             };
           }
 
@@ -322,6 +330,7 @@ export class CICheckHandler {
             totalDuration: Date.now() - startTime,
             finalChecks: recheckResult.checks,
             summary: `CI checks failed and could not be fixed: ${fixResult.error}`,
+            selfHealed: false,
           };
         }
       }
@@ -336,6 +345,7 @@ export class CICheckHandler {
       totalDuration: Date.now() - startTime,
       finalChecks: lastCheckResult?.checks ?? [],
       summary: `Maximum fix iterations (${options.maxIterations}) reached without success`,
+      selfHealed: false,
     };
   }
 

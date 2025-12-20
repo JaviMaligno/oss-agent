@@ -40,6 +40,13 @@ export interface DiscoveryConfig {
   requireContributingGuide?: boolean | undefined;
   excludeArchived?: boolean | undefined;
   excludeForks?: boolean | undefined;
+  // Repo size filters (in KB)
+  minRepoSizeKB?: number | undefined;
+  maxRepoSizeKB?: number | undefined;
+  // Activity filters
+  requireRecentPRs?: boolean | undefined; // Require merged PRs in last 30 days
+  minOpenIssues?: number | undefined; // Minimum number of open issues
+  maxOpenIssues?: number | undefined; // Maximum number of open issues
 }
 
 // Re-export for CLI usage
@@ -53,6 +60,12 @@ export interface SearchCriteria {
   hasGoodFirstIssues?: boolean | undefined;
   hasHelpWantedIssues?: boolean | undefined;
   pushedAfter?: string | undefined; // ISO date string
+  // Repo size filters (in KB)
+  minRepoSizeKB?: number | undefined;
+  maxRepoSizeKB?: number | undefined;
+  // Open issues range
+  minOpenIssues?: number | undefined;
+  maxOpenIssues?: number | undefined;
 }
 
 interface GitHubSearchResult {
@@ -273,6 +286,10 @@ export class DiscoveryService {
       minStars: config.minStars ?? this.ossConfig?.minStars ?? 100,
       maxStars: config.maxStars ?? this.ossConfig?.maxStars ?? 50000,
       topics: config.topics ? [...config.topics] : [],
+      minRepoSizeKB: config.minRepoSizeKB,
+      maxRepoSizeKB: config.maxRepoSizeKB,
+      minOpenIssues: config.minOpenIssues,
+      maxOpenIssues: config.maxOpenIssues,
     };
 
     // Expand domain to topics
@@ -344,8 +361,23 @@ export class DiscoveryService {
     logger.debug(`Search query: ${query}`);
 
     try {
-      const results = await this.searchRepositories(query, limit);
-      return results.map((r) => this.mapSearchResultToProject(r));
+      // Fetch more than needed to account for post-filtering
+      const fetchLimit =
+        criteria.minOpenIssues !== undefined || criteria.maxOpenIssues !== undefined
+          ? limit * 2
+          : limit;
+      const results = await this.searchRepositories(query, fetchLimit);
+      let projects = results.map((r) => this.mapSearchResultToProject(r));
+
+      // Post-filter by open issues count (not supported by GitHub API)
+      if (criteria.minOpenIssues !== undefined) {
+        projects = projects.filter((p) => p.openIssues >= (criteria.minOpenIssues ?? 0));
+      }
+      if (criteria.maxOpenIssues !== undefined) {
+        projects = projects.filter((p) => p.openIssues <= (criteria.maxOpenIssues ?? Infinity));
+      }
+
+      return projects.slice(0, limit);
     } catch (error) {
       logger.error(`Search failed: ${error}`);
       return [];
@@ -636,6 +668,15 @@ export class DiscoveryService {
     if (criteria.pushedAfter) {
       parts.push(`pushed:>${criteria.pushedAfter}`);
     }
+
+    // Repo size filter (in KB)
+    if (criteria.minRepoSizeKB !== undefined || criteria.maxRepoSizeKB !== undefined) {
+      const min = criteria.minRepoSizeKB ?? 0;
+      const max = criteria.maxRepoSizeKB ?? "*";
+      parts.push(`size:${min}..${max}`);
+    }
+
+    // Note: open-issues filter is applied as post-filter since GitHub API doesn't support it
 
     // Always exclude archived repos
     parts.push("archived:false");
