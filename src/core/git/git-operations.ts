@@ -176,15 +176,23 @@ export class GitOperations {
    *
    * Handles existing branches according to config.existingBranchStrategy:
    * - "auto-clean": Delete existing branch (local + remote) and start fresh
+   *   NOTE: Will NOT delete remote branch if there's an open PR to prevent PR closure
    * - "reuse": Reuse existing branch if found
    * - "suffix": Create a new branch with numeric suffix (e.g., branch-2, branch-3)
    * - "fail": Fail if branch already exists
+   *
+   * @param repoPath - Path to the repository
+   * @param issueNumber - Issue number for branch naming
+   * @param issueTitle - Issue title for branch naming
+   * @param baseBranch - Base branch to create from (defaults to default branch)
+   * @param repoInfo - Optional owner/repo info for PR checking during auto-clean
    */
   async createBranch(
     repoPath: string,
     issueNumber: number,
     issueTitle: string,
-    baseBranch?: string
+    baseBranch?: string,
+    repoInfo?: { owner: string; repo: string }
   ): Promise<BranchResult> {
     const base = baseBranch ?? (await this.getDefaultBranch(repoPath));
 
@@ -268,12 +276,47 @@ export class GitOperations {
             logger.debug(`Deleted local branch: ${branchName}`);
           } catch {
             // May fail if branch is checked out in a worktree - try to remove worktree first
-            logger.debug(`Could not delete local branch, may be in use by worktree`);
+            logger.debug(`Could not delete local branch, checking for worktrees...`);
+            try {
+              const worktrees = await this.listWorktrees(repoPath);
+              const blockingWt = worktrees.find(
+                (wt) => wt.branch === `refs/heads/${branchName}` || wt.branch === branchName
+              );
+
+              if (blockingWt) {
+                logger.info(`Removing blocking worktree: ${blockingWt.path}`);
+                await this.removeWorktree(repoPath, blockingWt.path);
+                // Retry branch deletion
+                await this.git(["branch", "-D", branchName], { cwd: repoPath });
+                logger.debug(`Deleted local branch after worktree cleanup: ${branchName}`);
+              }
+            } catch (e) {
+              logger.warn(`Failed to clean up blocking worktree: ${e}`);
+            }
           }
         }
 
-        // Delete from fork remote if exists
+        // Delete from fork remote if exists, but ONLY if there's no open PR
+        // Deleting the head branch of a PR will close it
         if (existsOnFork) {
+          let hasOpenPR = false;
+          if (repoInfo) {
+            // Check if there's an open PR for this branch (targeting upstream)
+            hasOpenPR = await this.hasOpenPR(repoInfo.owner, repoInfo.repo, branchName);
+          }
+
+          if (hasOpenPR) {
+            logger.warn(
+              `Skipping remote branch deletion: open PR exists for ${branchName}. ` +
+                `Using "reuse" strategy instead to preserve the PR.`
+            );
+            // Make sure local branch exists (might only be on remote)
+            if (!existsLocal) {
+              await this.git(["branch", branchName, `fork/${branchName}`], { cwd: repoPath });
+            }
+            return { name: branchName, created: false };
+          }
+
           try {
             await this.git(["push", "fork", "--delete", branchName], { cwd: repoPath });
             logger.debug(`Deleted branch from fork: ${branchName}`);
@@ -312,7 +355,10 @@ export class GitOperations {
    * Create a worktree for isolated issue work
    */
   async createWorktree(repoPath: string, branchName: string, issueId: string): Promise<string> {
-    const worktreeName = `${basename(repoPath)}-${issueId}`;
+    // Sanitize issueId for file path: replace # and / with - to avoid Vite issues
+    // e.g., "owner/repo#123" becomes "owner-repo-123"
+    const sanitizedIssueId = issueId.replace(/[#/]/g, "-");
+    const worktreeName = `${basename(repoPath)}-${sanitizedIssueId}`;
     const worktreePath = join(this.worktreesDir, worktreeName);
 
     if (existsSync(worktreePath)) {
@@ -388,7 +434,12 @@ export class GitOperations {
   async push(
     cwd: string,
     branchName: string,
-    options: { force?: boolean; setUpstream?: boolean; remote?: string } = {}
+    options: {
+      force?: boolean;
+      setUpstream?: boolean;
+      remote?: string;
+      skipVerification?: boolean;
+    } = {}
   ): Promise<PushResult> {
     const remote = options.remote ?? "origin";
     const pushArgs = ["push"];
@@ -399,13 +450,16 @@ export class GitOperations {
     if (options.force) {
       pushArgs.push("--force-with-lease");
     }
+    if (options.skipVerification) {
+      pushArgs.push("--no-verify");
+    }
 
     pushArgs.push(remote, branchName);
 
     await this.git(pushArgs, { cwd });
     logger.info(`Pushed branch: ${branchName}`);
 
-    return { branch: branchName, remote: "origin" };
+    return { branch: branchName, remote: options.remote ?? "origin" };
   }
 
   /**
@@ -730,5 +784,71 @@ export class GitOperations {
 
     // For non-network commands, execute directly
     return executeGit();
+  }
+
+  /**
+   * Execute a gh CLI command
+   */
+  private async gh(args: string[], _options: { cwd?: string } = {}): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn("gh", args, {
+        cwd: _options.cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout.on("data", (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          reject(new Error(`gh command failed: gh ${args.join(" ")}\n${stderr || stdout}`));
+        }
+      });
+
+      proc.on("error", (error) => {
+        reject(new Error(`Failed to spawn gh: ${error.message}`));
+      });
+    });
+  }
+
+  /**
+   * Check if there's an open PR for a branch in a repository
+   * Uses gh CLI to query GitHub API
+   */
+  async hasOpenPR(owner: string, repo: string, branchName: string): Promise<boolean> {
+    try {
+      const result = await this.gh([
+        "pr",
+        "list",
+        "--repo",
+        `${owner}/${repo}`,
+        "--head",
+        branchName,
+        "--state",
+        "open",
+        "--json",
+        "number",
+      ]);
+      const prs = JSON.parse(result.trim() || "[]") as Array<{ number: number }>;
+      if (prs.length > 0) {
+        logger.debug(`Found open PR for branch ${branchName}: #${prs[0]?.number}`);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      logger.debug(`Could not check for open PRs: ${error}`);
+      // If we can't check, assume there might be a PR to be safe
+      return false;
+    }
   }
 }

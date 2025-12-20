@@ -21,6 +21,9 @@ import {
   createRunCommand,
   createInternalCommand,
   createCampaignCommand,
+  createAuditCommand,
+  createReviewCommand,
+  createWebhookCommand,
 } from "./commands/index.js";
 import { createServeCommand } from "./commands/serve.js";
 import { logger } from "../infra/logger.js";
@@ -60,6 +63,9 @@ program.addCommand(createPrsCommand());
 program.addCommand(createRunCommand());
 program.addCommand(createCampaignCommand());
 program.addCommand(createInternalCommand());
+program.addCommand(createAuditCommand());
+program.addCommand(createReviewCommand());
+program.addCommand(createWebhookCommand());
 program.addCommand(createServeCommand());
 
 // Error handling

@@ -6,6 +6,7 @@ import { StateManager } from "../../core/state/state-manager.js";
 import { GitOperations } from "../../core/git/git-operations.js";
 import { IssueProcessor } from "../../core/engine/index.js";
 import { createProvider } from "../../core/ai/provider-factory.js";
+import { ReviewService } from "../../core/engine/review-service.js";
 
 export function createWorkCommand(): Command {
   const command = new Command("work")
@@ -15,6 +16,11 @@ export function createWorkCommand(): Command {
     .option("-b, --max-budget <usd>", "Maximum budget for this issue in USD", parseFloat)
     .option("-r, --resume", "Resume from previous session if available", false)
     .option("--skip-pr", "Skip creating pull request", false)
+    .option("--review", "Automatically review PR created", false)
+    .option("--wait-for-ci", "Wait for CI checks after PR creation (default: true)")
+    .option("--no-wait-for-ci", "Skip waiting for CI checks")
+    .option("--auto-fix-ci", "Automatically fix failed CI checks (default: true)")
+    .option("--no-auto-fix-ci", "Don't auto-fix failed CI checks")
     .option("-v, --verbose", "Enable verbose output", false)
     .action(async (issueUrl: string, options: WorkOptions) => {
       if (options.verbose) {
@@ -37,6 +43,9 @@ interface WorkOptions {
   maxBudget?: number;
   resume: boolean;
   skipPr: boolean;
+  review: boolean;
+  waitForCi?: boolean;
+  autoFixCi?: boolean;
   verbose: boolean;
 }
 
@@ -62,10 +71,11 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
     logger.warn("Dry run mode - no changes will be made");
   }
 
-  // Initialize components
+  // Initialize services
   const stateManager = new StateManager(dataDir);
   const gitOps = new GitOperations(config.git, dataDir);
   const aiProvider = await createProvider(config);
+  const reviewService = new ReviewService(config, stateManager, gitOps, aiProvider);
 
   // Check AI provider availability
   const available = await aiProvider.isAvailable();
@@ -85,13 +95,23 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
   console.error("");
 
   // Create processor and run
-  const processor = new IssueProcessor(config, stateManager, gitOps, aiProvider);
+  const processor = new IssueProcessor(
+    config,
+    stateManager,
+    gitOps,
+    aiProvider,
+    undefined,
+    reviewService
+  );
 
   try {
     const processOptions: Parameters<typeof processor.processIssue>[0] = {
       issueUrl,
       resume: options.resume,
       skipPR: options.skipPr || options.dryRun,
+      review: options.review,
+      waitForCIChecks: options.waitForCi,
+      autoFixCI: options.autoFixCi,
     };
     if (options.maxBudget !== undefined) {
       processOptions.maxBudgetUsd = options.maxBudget;
@@ -117,6 +137,21 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
       if (result.prUrl) {
         console.error("");
         console.error(pc.green(`Pull Request: ${result.prUrl}`));
+      }
+
+      if (result.ciResult) {
+        console.error("");
+        console.error(pc.dim("CI Checks:"));
+        console.error(`  Status: ${result.ciResult.finalStatus}`);
+        console.error(`  Iterations: ${result.ciResult.iterations.length}`);
+        if (result.ciResult.finalStatus === "success") {
+          console.error(pc.green(`  All ${result.ciResult.finalChecks.length} checks passed!`));
+        } else if (
+          result.ciResult.finalStatus !== "no_checks" &&
+          result.ciResult.finalStatus !== "skipped"
+        ) {
+          console.error(pc.yellow(`  ${result.ciResult.summary}`));
+        }
       }
     } else {
       logger.error(`Issue processing failed: ${result.error}`);

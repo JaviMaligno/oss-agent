@@ -40,6 +40,52 @@ export const GitConfigSchema = z.object({
   existingBranchStrategy: z.enum(["auto-clean", "reuse", "suffix", "fail"]).default("auto-clean"),
 });
 
+export const CICheckConfigSchema = z.object({
+  // Whether to wait for CI checks after PR creation
+  waitForChecks: z.boolean().default(true),
+  // Whether to auto-fix failed CI checks
+  autoFixFailedChecks: z.boolean().default(true),
+  // Timeout for CI checks to complete (ms) - default 30 minutes
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .default(30 * 60 * 1000),
+  // Interval between polling CI status (ms) - default 30 seconds
+  pollIntervalMs: z
+    .number()
+    .int()
+    .positive()
+    .default(30 * 1000),
+  // Initial delay before first poll (ms) - allows GitHub Actions to register
+  // Default 15 seconds to give GitHub time to create check runs after PR creation
+  initialDelayMs: z
+    .number()
+    .int()
+    .nonnegative()
+    .default(15 * 1000),
+  // Maximum iterations for CI fix attempts
+  maxFixIterations: z.number().int().positive().default(3),
+  // Maximum budget per fix attempt (USD)
+  maxBudgetPerFix: z.number().positive().default(2),
+  // Specific checks to wait for (optional, waits for all if not specified)
+  requiredChecks: z.array(z.string()).optional(),
+});
+
+export const ReviewConfigSchema = z.object({
+  // Whether to run automated review after CI passes
+  enabled: z.boolean().default(true),
+  // Whether to post approval/request-changes verdict (false = comments only)
+  // Default false to avoid automated approval without human review
+  postApproval: z.boolean().default(false),
+  // Whether to auto-fix issues found during review
+  autoFix: z.boolean().default(true),
+  // Whether to post review comments on the PR
+  postComment: z.boolean().default(true),
+  // Maximum budget per review (USD)
+  maxBudgetUsd: z.number().positive().default(2),
+});
+
 export const QualityGatesSchema = z.object({
   maxPrsPerProjectPerDay: z.number().int().positive().default(2),
   maxPrsPerDay: z.number().int().positive().default(10),
@@ -47,6 +93,10 @@ export const QualityGatesSchema = z.object({
   maxLinesChanged: z.number().int().positive().default(500),
   requireTestsPass: z.boolean().default(true),
   requireLintPass: z.boolean().default(true),
+  // CI check configuration (optional)
+  ciChecks: CICheckConfigSchema.optional(),
+  // Automated review configuration (optional)
+  review: ReviewConfigSchema.optional(),
 });
 
 export const QueueConfigSchema = z.object({
@@ -354,6 +404,46 @@ export const MCPConfigSchema = z.object({
   tools: MCPToolsSchema.default({}),
 });
 
+// === Audit Configuration (Phase 7.1) ===
+
+export const AuditConfigSchema = z.object({
+  categories: z
+    .array(z.enum(["security", "performance", "documentation", "code-quality", "test-coverage"]))
+    .default(["security", "documentation", "code-quality"]),
+  minSeverity: z.enum(["critical", "high", "medium", "low", "info"]).default("medium"),
+  minConfidence: z.enum(["high", "medium", "low"]).default("medium"),
+  issueCreation: z
+    .object({
+      mode: z.enum(["auto", "approve", "never"]).default("approve"),
+      autoCreateSeverities: z
+        .array(z.enum(["critical", "high", "medium", "low", "info"]))
+        .optional(),
+      issueLabels: z.array(z.string()).default(["audit-finding"]),
+    })
+    .default({}),
+  security: z
+    .object({
+      disclosureMode: z.enum(["advisory", "private-issue", "public-issue"]).default("advisory"),
+      advisorySeverities: z
+        .array(z.enum(["critical", "high", "medium", "low", "info"]))
+        .default(["critical", "high"]),
+    })
+    .default({}),
+  autoResolve: z
+    .object({
+      enabled: z.boolean().default(false),
+      categories: z
+        .array(
+          z.enum(["security", "performance", "documentation", "code-quality", "test-coverage"])
+        )
+        .optional(),
+      maxPerRun: z.number().int().positive().default(3),
+      maxBudgetPerFinding: z.number().positive().default(5),
+    })
+    .default({}),
+  maxBudgetPerAudit: z.number().positive().default(10),
+});
+
 export const ConfigSchema = z.object({
   ai: AIConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
@@ -362,6 +452,7 @@ export const ConfigSchema = z.object({
   parallel: ParallelConfigSchema.default({}),
   hardening: HardeningConfigSchema.default({}),
   mcp: MCPConfigSchema.optional(),
+  audit: AuditConfigSchema.default({}),
   mode: z.enum(["oss", "b2b"]).default("oss"),
   oss: OSSConfigSchema.optional(),
   b2b: B2BConfigSchema.optional(),
@@ -374,10 +465,13 @@ export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
 export type GitConfig = z.infer<typeof GitConfigSchema>;
 export type LoggingConfig = z.infer<typeof LoggingConfigSchema>;
 export type ParallelConfig = z.infer<typeof ParallelConfigSchema>;
+export type CICheckConfig = z.infer<typeof CICheckConfigSchema>;
+export type ReviewConfig = z.infer<typeof ReviewConfigSchema>;
 export type QualityGates = z.infer<typeof QualityGatesSchema>;
 export type QueueConfig = z.infer<typeof QueueConfigSchema>;
 export type OSSConfig = z.infer<typeof OSSConfigSchema>;
 export type B2BConfig = z.infer<typeof B2BConfigSchema>;
+export type AuditConfig = z.infer<typeof AuditConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 // Provider configuration types

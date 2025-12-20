@@ -12,6 +12,7 @@ import { createQueueTools } from "./queue-tools.js";
 import { createAutonomousTools } from "./autonomous-tools.js";
 import { createMonitoringTools } from "./monitoring-tools.js";
 import { createManagementTools } from "./management-tools.js";
+import { createAuditTools } from "./audit-tools.js";
 
 export interface ToolRegistryOptions {
   config: Config;
@@ -50,6 +51,7 @@ const HARDENED_TOOLS = new Set([
   "work_parallel",
   "discover_projects",
   "suggest_issues",
+  "audit_repository",
 ]);
 
 /**
@@ -114,6 +116,12 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
   // Register management tools (Phase 5 - implemented)
   const managementTools = createManagementTools(options);
   for (const tool of managementTools) {
+    tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
+  }
+
+  // Register audit tools (Phase 7.1 - implemented)
+  const auditTools = createAuditTools(options);
+  for (const tool of auditTools) {
     tools.set(tool.definition.name, maybeHarden(tool, hardeningEnabled, hardeningConfig));
   }
 

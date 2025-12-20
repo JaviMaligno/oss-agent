@@ -24,6 +24,7 @@ export class ClaudeCLIProvider implements AIProvider {
     sessionResume: true, // Can use --resume
     streaming: true, // Output streams to terminal
     budgetLimits: false, // No budget control in CLI mode
+    customMcpServers: false, // CLI spawns external process, can't use in-memory MCP servers
   };
 
   private usage: ProviderUsage = {
@@ -79,6 +80,15 @@ export class ClaudeCLIProvider implements AIProvider {
   }
 
   async query(prompt: string, options: QueryOptions): Promise<QueryResult> {
+    // CLI mode doesn't support custom MCP servers (they require in-process execution)
+    if (options.mcpServers && Object.keys(options.mcpServers).length > 0) {
+      logger.warn(
+        "Custom MCP servers are not supported in CLI mode. " +
+          "Switch to SDK mode (ai.executionMode: 'sdk') for tool-based operations."
+      );
+      // Continue anyway - the prompt will guide the AI but tool calls won't work
+    }
+
     const cbConfig = this.hardeningConfig?.circuitBreaker;
     const circuitBreaker = getCircuitBreaker(
       CIRCUIT_OPERATIONS.AI_PROVIDER,
@@ -124,8 +134,10 @@ export class ClaudeCLIProvider implements AIProvider {
 
     const args = this.buildArgs(prompt, options);
     const timeoutMs =
-      options.timeoutMs ?? this.hardeningConfig?.watchdog.aiOperationTimeoutMs ?? 300000;
+      options.timeoutMs ?? this.hardeningConfig?.watchdog.aiOperationTimeoutMs ?? 900000;
 
+    // Inform user that initialization may take time
+    logger.info("Starting Claude Code (may take time to index large repositories)...");
     logger.debug("Spawning Claude CLI", { args: args.join(" "), cwd: options.cwd });
 
     return new Promise((resolve, reject) => {
@@ -133,6 +145,8 @@ export class ClaudeCLIProvider implements AIProvider {
       let cleanupTaskId: string | undefined;
       let watchdog: Watchdog | undefined;
       let isTimedOut = false;
+      let firstOutputReceived = false;
+      let earlyWarningTimer: ReturnType<typeof setTimeout> | undefined;
 
       try {
         proc = spawn(this.config.cli.path, args, {
@@ -156,11 +170,29 @@ export class ClaudeCLIProvider implements AIProvider {
         cleanupTaskId = registerProcessCleanup(proc.pid);
       }
 
+      // Set up early warning for users if no output after 30 seconds
+      earlyWarningTimer = setTimeout(() => {
+        if (!firstOutputReceived) {
+          logger.warn("Claude Code is still initializing (indexing repository)...");
+          logger.info("This is normal for large repositories. Please wait...");
+        }
+      }, 30000);
+
+      // Set up periodic status updates every 60 seconds while waiting
+      const statusTimer = setInterval(() => {
+        if (!firstOutputReceived) {
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          logger.info(`Still waiting for Claude Code (${elapsed}s elapsed)...`);
+        }
+      }, 60000);
+
       // Set up watchdog for hung detection
       watchdog = new Watchdog("claude-cli-query", {
         timeoutMs,
         onTimeout: (ctx) => {
           isTimedOut = true;
+          clearInterval(statusTimer);
+          if (earlyWarningTimer) clearTimeout(earlyWarningTimer);
           logger.warn(`Claude CLI hung after ${ctx.operationType}`, {
             elapsed: Date.now() - ctx.startedAt.getTime(),
           });
@@ -186,9 +218,22 @@ export class ClaudeCLIProvider implements AIProvider {
       proc.stdin?.write(prompt);
       proc.stdin?.end();
 
+      // Helper to handle first output
+      const onFirstOutput = (): void => {
+        if (!firstOutputReceived) {
+          firstOutputReceived = true;
+          if (earlyWarningTimer) clearTimeout(earlyWarningTimer);
+          clearInterval(statusTimer);
+          logger.info("Claude Code started processing...");
+        }
+      };
+
       proc.stdout?.on("data", (data: Buffer) => {
         const chunk = data.toString();
         stdout += chunk;
+
+        // Mark first output and clear warning timers
+        onFirstOutput();
 
         // Heartbeat on output
         watchdog?.heartbeat();
@@ -211,6 +256,9 @@ export class ClaudeCLIProvider implements AIProvider {
       proc.stderr?.on("data", (data: Buffer) => {
         const chunk = data.toString();
         stderr += chunk;
+
+        // Mark first output and clear warning timers
+        onFirstOutput();
 
         // Heartbeat on output
         watchdog?.heartbeat();
@@ -315,6 +363,12 @@ export class ClaudeCLIProvider implements AIProvider {
 
   private buildArgs(_prompt: string, options: QueryOptions): string[] {
     const args: string[] = [];
+
+    // Resume from previous session if provided
+    if (options.resumeSessionId) {
+      args.push("--resume", options.resumeSessionId);
+      logger.debug(`Resuming session: ${options.resumeSessionId}`);
+    }
 
     // Print mode (non-interactive, outputs result)
     args.push("--print");

@@ -16,3 +16,6 @@ export { createPrsCommand } from "./prs.js";
 export { createRunCommand } from "./run.js";
 export { createCampaignCommand } from "./campaign.js";
 export { createInternalCommand } from "./internal.js";
+export { createAuditCommand } from "./audit.js";
+export { createReviewCommand } from "./review.js";
+export { createWebhookCommand } from "./webhook.js";

@@ -52,7 +52,7 @@ export class PRService {
       "--repo",
       `${owner}/${repo}`,
       "--json",
-      "number,title,body,state,isDraft,mergeable,headRefName,baseRefName,headRefOid,author,createdAt,updatedAt,comments,reviewComments,statusCheckRollup",
+      "number,title,body,state,isDraft,mergeable,headRefName,baseRefName,headRefOid,author,createdAt,updatedAt,comments,statusCheckRollup",
     ]);
 
     const data = JSON.parse(json);
@@ -84,7 +84,7 @@ export class PRService {
       updatedAt: new Date(data.updatedAt),
       linkedIssueUrl: null, // Would need separate query to get linked issues
       commentCount: data.comments?.length ?? 0,
-      reviewCommentCount: data.reviewComments?.length ?? 0,
+      reviewCommentCount: 0, // Not available in gh pr view --json
       checksPass,
     };
   }

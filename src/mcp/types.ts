@@ -317,6 +317,12 @@ export type MCPToolName =
   | "get_config"
   | "update_config"
   | "cleanup_worktrees"
+  // Audit
+  | "audit_repository"
+  | "list_audit_runs"
+  | "get_audit_findings"
+  | "approve_finding"
+  | "reject_finding"
   // Campaign (B2B)
   | "campaign_create"
   | "campaign_list"

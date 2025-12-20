@@ -27,6 +27,7 @@ export class ClaudeSDKProvider implements AIProvider {
     sessionResume: true,
     streaming: true,
     budgetLimits: true,
+    customMcpServers: true, // SDK runs in-process, supports custom MCP servers
   };
 
   private usage: ProviderUsage = {
@@ -145,27 +146,39 @@ export class ClaudeSDKProvider implements AIProvider {
       watchdog.start({ prompt: prompt.slice(0, 100) });
 
       try {
+        // Determine allowed tools
+        const defaultTools = [
+          "Read",
+          "Write",
+          "Edit",
+          "Bash",
+          "Glob",
+          "Grep",
+          "WebFetch",
+          "WebSearch",
+        ];
+        const allowedTools = options.allowedTools ?? defaultTools;
+
+        // Build SDK options
+        type SdkOptions = Parameters<typeof sdkQuery>[0]["options"];
+        const sdkOptions: SdkOptions = {
+          abortController,
+          model: options.model ?? this.config.model,
+          allowedTools,
+          maxTurns: options.maxTurns ?? this.config.cli.maxTurns,
+          cwd: options.cwd,
+          permissionMode: "bypassPermissions",
+        };
+
+        // Add MCP servers if provided
+        if (options.mcpServers && Object.keys(options.mcpServers).length > 0) {
+          sdkOptions.mcpServers = options.mcpServers;
+        }
+
         // Execute the SDK query
         const response = sdkQuery({
           prompt: fullPrompt,
-          options: {
-            abortController,
-            model: options.model ?? this.config.model,
-            allowedTools: [
-              "Read",
-              "Write",
-              "Edit",
-              "Bash",
-              "Glob",
-              "Grep",
-              "WebFetch",
-              "WebSearch",
-            ],
-            maxTurns: options.maxTurns ?? this.config.cli.maxTurns,
-            cwd: options.cwd,
-            permissionMode: "bypassPermissions",
-            // Note: SDK handles API key from environment automatically
-          },
+          options: sdkOptions,
         });
 
         let resultMessage: SDKResultMessage | null = null;

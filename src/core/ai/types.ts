@@ -2,6 +2,8 @@
  * Types for AI Provider abstraction
  */
 
+import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-code";
+
 export interface QueryOptions {
   /** Working directory for file operations */
   cwd: string;
@@ -15,6 +17,12 @@ export interface QueryOptions {
   timeoutMs?: number;
   /** Additional context to prepend to the prompt */
   systemContext?: string;
+  /** Custom MCP servers to make available (SDK mode only) */
+  mcpServers?: Record<string, McpSdkServerConfigWithInstance>;
+  /** Specific tools to allow (restricts default tools) */
+  allowedTools?: string[];
+  /** Session ID to resume from a previous session */
+  resumeSessionId?: string;
 }
 
 export interface QueryResult {
@@ -45,6 +53,8 @@ export interface ProviderCapabilities {
   streaming: boolean;
   /** Supports budget limits */
   budgetLimits: boolean;
+  /** Supports custom MCP servers (in-process tool definitions) */
+  customMcpServers: boolean;
 }
 
 export interface AIProvider {

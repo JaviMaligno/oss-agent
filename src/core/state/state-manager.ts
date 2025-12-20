@@ -11,6 +11,15 @@ import {
   VALID_TRANSITIONS,
 } from "../../types/issue.js";
 import { Session, SessionStatus, SessionTransition } from "../../types/session.js";
+import {
+  AuditRun,
+  AuditFinding,
+  AuditRunStatus,
+  AuditFindingStatus,
+  AuditCategory,
+  AuditSeverity,
+  AuditFindingFilters,
+} from "../../types/audit.js";
 
 /**
  * StateManager - SQLite-backed persistence for issues, sessions, and transitions
@@ -255,6 +264,53 @@ export class StateManager {
       CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
       CREATE INDEX IF NOT EXISTS idx_campaign_issues_campaign ON campaign_issues(campaign_id);
       CREATE INDEX IF NOT EXISTS idx_campaign_issues_status ON campaign_issues(status);
+
+      -- Audit runs table (Phase 7.1)
+      CREATE TABLE IF NOT EXISTS audit_runs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        status TEXT NOT NULL DEFAULT 'in_progress',
+        categories TEXT NOT NULL,
+        total_findings INTEGER DEFAULT 0,
+        critical_findings INTEGER DEFAULT 0,
+        high_findings INTEGER DEFAULT 0,
+        medium_findings INTEGER DEFAULT 0,
+        low_findings INTEGER DEFAULT 0,
+        cost_usd REAL DEFAULT 0,
+        duration_ms INTEGER,
+        error TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      );
+
+      -- Audit findings table (Phase 7.1)
+      CREATE TABLE IF NOT EXISTS audit_findings (
+        id TEXT PRIMARY KEY,
+        audit_run_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        confidence TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        file_path TEXT,
+        line_number INTEGER,
+        code_snippet TEXT,
+        recommendation TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        issue_url TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        metadata TEXT,
+        FOREIGN KEY (audit_run_id) REFERENCES audit_runs(id)
+      );
+
+      -- Indexes for audit tables
+      CREATE INDEX IF NOT EXISTS idx_audit_runs_project ON audit_runs(project_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_runs_status ON audit_runs(status);
+      CREATE INDEX IF NOT EXISTS idx_audit_findings_audit_run ON audit_findings(audit_run_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_findings_status ON audit_findings(status);
+      CREATE INDEX IF NOT EXISTS idx_audit_findings_severity ON audit_findings(severity);
     `);
   }
 
@@ -1263,6 +1319,374 @@ export class StateManager {
     };
   }
 
+  // ============ Audit Methods (Phase 7.1) ============
+
+  /**
+   * Create a new audit run
+   */
+  createAuditRun(options: { projectId: string; categories: AuditCategory[] }): AuditRun {
+    const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date();
+
+    // Ensure the project exists first
+    this.ensureProject(options.projectId);
+
+    this.db
+      .prepare(
+        `INSERT INTO audit_runs (id, project_id, started_at, status, categories)
+         VALUES (?, ?, ?, 'in_progress', ?)`
+      )
+      .run(id, options.projectId, now.toISOString(), JSON.stringify(options.categories));
+
+    logger.debug(`Created audit run ${id} for project ${options.projectId}`);
+
+    return {
+      id,
+      projectId: options.projectId,
+      startedAt: now,
+      status: "in_progress",
+      categories: options.categories,
+      totalFindings: 0,
+      criticalFindings: 0,
+      highFindings: 0,
+      mediumFindings: 0,
+      lowFindings: 0,
+      costUsd: 0,
+    };
+  }
+
+  /**
+   * Get an audit run by ID
+   */
+  getAuditRun(id: string): AuditRun | null {
+    const row = this.db.prepare("SELECT * FROM audit_runs WHERE id = ?").get(id) as
+      | AuditRunRow
+      | undefined;
+
+    return row ? this.rowToAuditRun(row) : null;
+  }
+
+  /**
+   * Update an audit run
+   */
+  updateAuditRun(
+    id: string,
+    updates: Partial<{
+      status: AuditRunStatus;
+      totalFindings: number;
+      criticalFindings: number;
+      highFindings: number;
+      mediumFindings: number;
+      lowFindings: number;
+      costUsd: number;
+      durationMs: number;
+      error: string;
+    }>
+  ): void {
+    const setClauses: string[] = [];
+    const params: Record<string, unknown> = { id };
+
+    if (updates.status !== undefined) {
+      setClauses.push("status = @status");
+      params.status = updates.status;
+      if (
+        updates.status === "completed" ||
+        updates.status === "failed" ||
+        updates.status === "cancelled"
+      ) {
+        setClauses.push("completed_at = @completedAt");
+        params.completedAt = new Date().toISOString();
+      }
+    }
+    if (updates.totalFindings !== undefined) {
+      setClauses.push("total_findings = @totalFindings");
+      params.totalFindings = updates.totalFindings;
+    }
+    if (updates.criticalFindings !== undefined) {
+      setClauses.push("critical_findings = @criticalFindings");
+      params.criticalFindings = updates.criticalFindings;
+    }
+    if (updates.highFindings !== undefined) {
+      setClauses.push("high_findings = @highFindings");
+      params.highFindings = updates.highFindings;
+    }
+    if (updates.mediumFindings !== undefined) {
+      setClauses.push("medium_findings = @mediumFindings");
+      params.mediumFindings = updates.mediumFindings;
+    }
+    if (updates.lowFindings !== undefined) {
+      setClauses.push("low_findings = @lowFindings");
+      params.lowFindings = updates.lowFindings;
+    }
+    if (updates.costUsd !== undefined) {
+      setClauses.push("cost_usd = @costUsd");
+      params.costUsd = updates.costUsd;
+    }
+    if (updates.durationMs !== undefined) {
+      setClauses.push("duration_ms = @durationMs");
+      params.durationMs = updates.durationMs;
+    }
+    if (updates.error !== undefined) {
+      setClauses.push("error = @error");
+      params.error = updates.error;
+    }
+
+    if (setClauses.length > 0) {
+      this.db.prepare(`UPDATE audit_runs SET ${setClauses.join(", ")} WHERE id = @id`).run(params);
+    }
+  }
+
+  /**
+   * Mark an audit run as completed with final stats
+   */
+  completeAuditRun(
+    id: string,
+    result: {
+      totalFindings: number;
+      criticalFindings: number;
+      highFindings: number;
+      mediumFindings: number;
+      lowFindings: number;
+      costUsd: number;
+      durationMs: number;
+    }
+  ): void {
+    this.updateAuditRun(id, {
+      status: "completed",
+      ...result,
+    });
+    logger.debug(`Completed audit run ${id} with ${result.totalFindings} findings`);
+  }
+
+  /**
+   * Mark an audit run as failed
+   */
+  failAuditRun(id: string, error: string): void {
+    this.updateAuditRun(id, {
+      status: "failed",
+      error,
+    });
+    logger.debug(`Failed audit run ${id}: ${error}`);
+  }
+
+  /**
+   * Get audit runs for a project
+   */
+  getAuditRunsByProject(projectId: string): AuditRun[] {
+    const rows = this.db
+      .prepare("SELECT * FROM audit_runs WHERE project_id = ? ORDER BY started_at DESC")
+      .all(projectId) as AuditRunRow[];
+
+    return rows.map((row) => this.rowToAuditRun(row));
+  }
+
+  /**
+   * Save a new audit finding
+   */
+  saveAuditFinding(finding: Omit<AuditFinding, "id" | "createdAt" | "updatedAt">): AuditFinding {
+    const id = `finding-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date();
+
+    this.db
+      .prepare(
+        `INSERT INTO audit_findings (id, audit_run_id, category, severity, confidence, title,
+                                     description, file_path, line_number, code_snippet, recommendation,
+                                     status, issue_url, created_at, updated_at, metadata)
+         VALUES (@id, @auditRunId, @category, @severity, @confidence, @title,
+                 @description, @filePath, @lineNumber, @codeSnippet, @recommendation,
+                 @status, @issueUrl, @createdAt, @updatedAt, @metadata)`
+      )
+      .run({
+        id,
+        auditRunId: finding.auditRunId,
+        category: finding.category,
+        severity: finding.severity,
+        confidence: finding.confidence,
+        title: finding.title,
+        description: finding.description,
+        filePath: finding.filePath ?? null,
+        lineNumber: finding.lineNumber ?? null,
+        codeSnippet: finding.codeSnippet ?? null,
+        recommendation: finding.recommendation,
+        status: finding.status,
+        issueUrl: finding.issueUrl ?? null,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        metadata: finding.metadata ? JSON.stringify(finding.metadata) : null,
+      });
+
+    logger.debug(`Saved audit finding ${id}: ${finding.title}`);
+
+    return {
+      id,
+      ...finding,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  /**
+   * Update an audit finding
+   */
+  updateAuditFinding(
+    id: string,
+    updates: Partial<{
+      status: AuditFindingStatus;
+      issueUrl: string;
+      metadata: Record<string, unknown>;
+    }>
+  ): void {
+    const setClauses: string[] = ["updated_at = @updatedAt"];
+    const params: Record<string, unknown> = {
+      id,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (updates.status !== undefined) {
+      setClauses.push("status = @status");
+      params.status = updates.status;
+    }
+    if (updates.issueUrl !== undefined) {
+      setClauses.push("issue_url = @issueUrl");
+      params.issueUrl = updates.issueUrl;
+    }
+    if (updates.metadata !== undefined) {
+      setClauses.push("metadata = @metadata");
+      params.metadata = JSON.stringify(updates.metadata);
+    }
+
+    this.db
+      .prepare(`UPDATE audit_findings SET ${setClauses.join(", ")} WHERE id = @id`)
+      .run(params);
+  }
+
+  /**
+   * Get an audit finding by ID
+   */
+  getAuditFinding(id: string): AuditFinding | null {
+    const row = this.db.prepare("SELECT * FROM audit_findings WHERE id = ?").get(id) as
+      | AuditFindingRow
+      | undefined;
+
+    return row ? this.rowToAuditFinding(row) : null;
+  }
+
+  /**
+   * Get audit findings for a run, with optional filters
+   */
+  getAuditFindings(auditRunId: string, filters?: AuditFindingFilters): AuditFinding[] {
+    let query = "SELECT * FROM audit_findings WHERE audit_run_id = ?";
+    const params: unknown[] = [auditRunId];
+
+    if (filters?.status) {
+      const statuses = Array.isArray(filters.status) ? filters.status : [filters.status];
+      query += ` AND status IN (${statuses.map(() => "?").join(", ")})`;
+      params.push(...statuses);
+    }
+
+    if (filters?.severity) {
+      const severities = Array.isArray(filters.severity) ? filters.severity : [filters.severity];
+      query += ` AND severity IN (${severities.map(() => "?").join(", ")})`;
+      params.push(...severities);
+    }
+
+    if (filters?.category) {
+      const categories = Array.isArray(filters.category) ? filters.category : [filters.category];
+      query += ` AND category IN (${categories.map(() => "?").join(", ")})`;
+      params.push(...categories);
+    }
+
+    if (filters?.minConfidence) {
+      const confidenceOrder = { high: 3, medium: 2, low: 1 };
+      const minLevel = confidenceOrder[filters.minConfidence];
+      query +=
+        " AND (CASE confidence WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 END) >= ?";
+      params.push(minLevel);
+    }
+
+    query += " ORDER BY severity DESC, created_at DESC";
+
+    const rows = this.db.prepare(query).all(...params) as AuditFindingRow[];
+    return rows.map((row) => this.rowToAuditFinding(row));
+  }
+
+  /**
+   * Get all pending findings across all runs
+   */
+  getPendingFindings(): AuditFinding[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM audit_findings
+         WHERE status = 'pending'
+         ORDER BY severity DESC, created_at DESC`
+      )
+      .all() as AuditFindingRow[];
+
+    return rows.map((row) => this.rowToAuditFinding(row));
+  }
+
+  private rowToAuditRun(row: AuditRunRow): AuditRun {
+    const run: AuditRun = {
+      id: row.id,
+      projectId: row.project_id,
+      startedAt: new Date(row.started_at),
+      status: row.status as AuditRunStatus,
+      categories: JSON.parse(row.categories) as AuditCategory[],
+      totalFindings: row.total_findings,
+      criticalFindings: row.critical_findings,
+      highFindings: row.high_findings,
+      mediumFindings: row.medium_findings,
+      lowFindings: row.low_findings,
+      costUsd: row.cost_usd,
+    };
+
+    if (row.completed_at) {
+      run.completedAt = new Date(row.completed_at);
+    }
+    if (row.duration_ms !== null) {
+      run.durationMs = row.duration_ms;
+    }
+    if (row.error !== null) {
+      run.error = row.error;
+    }
+
+    return run;
+  }
+
+  private rowToAuditFinding(row: AuditFindingRow): AuditFinding {
+    const finding: AuditFinding = {
+      id: row.id,
+      auditRunId: row.audit_run_id,
+      category: row.category as AuditCategory,
+      severity: row.severity as AuditSeverity,
+      confidence: row.confidence as "high" | "medium" | "low",
+      title: row.title,
+      description: row.description,
+      recommendation: row.recommendation,
+      status: row.status as AuditFindingStatus,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
+
+    if (row.file_path !== null) {
+      finding.filePath = row.file_path;
+    }
+    if (row.line_number !== null) {
+      finding.lineNumber = row.line_number;
+    }
+    if (row.code_snippet !== null) {
+      finding.codeSnippet = row.code_snippet;
+    }
+    if (row.issue_url !== null) {
+      finding.issueUrl = row.issue_url;
+    }
+    if (row.metadata !== null) {
+      finding.metadata = JSON.parse(row.metadata) as Record<string, unknown>;
+    }
+
+    return finding;
+  }
+
   // ============ Private Helpers ============
 
   private rowToIssue(row: IssueRow): Issue {
@@ -1366,6 +1790,43 @@ interface WorkRecordRow {
   attempts: number;
   last_attempt_at: string;
   total_cost_usd: number;
+}
+
+// Audit row types (Phase 7.1)
+interface AuditRunRow {
+  id: string;
+  project_id: string;
+  started_at: string;
+  completed_at: string | null;
+  status: string;
+  categories: string;
+  total_findings: number;
+  critical_findings: number;
+  high_findings: number;
+  medium_findings: number;
+  low_findings: number;
+  cost_usd: number;
+  duration_ms: number | null;
+  error: string | null;
+}
+
+interface AuditFindingRow {
+  id: string;
+  audit_run_id: string;
+  category: string;
+  severity: string;
+  confidence: string;
+  title: string;
+  description: string;
+  file_path: string | null;
+  line_number: number | null;
+  code_snippet: string | null;
+  recommendation: string;
+  status: string;
+  issue_url: string | null;
+  created_at: string;
+  updated_at: string;
+  metadata: string | null;
 }
 
 // Parallel session types (Phase 5)

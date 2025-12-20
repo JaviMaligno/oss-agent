@@ -152,45 +152,14 @@ export class RepoService {
 
     logger.info(`Forking ${owner}/${repo}...`);
 
-    // Create fork
-    const forkResult = await this.gh([
-      "repo",
-      "fork",
-      `${owner}/${repo}`,
-      "--clone=false",
-      "--json",
-      "owner,name,url,sshUrl,defaultBranchRef,isPrivate,isFork,parent",
-    ]);
+    // Create fork (gh repo fork doesn't support --json, so we fork first then get info)
+    await this.gh(["repo", "fork", `${owner}/${repo}`, "--clone=false"]);
 
-    const data = JSON.parse(forkResult) as {
-      owner: { login: string };
-      name: string;
-      url: string;
-      sshUrl: string;
-      defaultBranchRef: { name: string };
-      isPrivate: boolean;
-      isFork: boolean;
-      parent?: { owner: { login: string }; name: string };
-    };
+    // Wait a moment for GitHub to process the fork
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    const fork: RepoInfo = {
-      owner: data.owner.login,
-      name: data.name,
-      fullName: `${data.owner.login}/${data.name}`,
-      url: data.url,
-      sshUrl: data.sshUrl,
-      defaultBranch: data.defaultBranchRef.name,
-      isPrivate: data.isPrivate,
-      isFork: data.isFork,
-    };
-
-    if (data.parent) {
-      fork.parent = {
-        owner: data.parent.owner.login,
-        name: data.parent.name,
-        fullName: `${data.parent.owner.login}/${data.parent.name}`,
-      };
-    }
+    // Get fork info using getRepoInfo
+    const fork = await this.getRepoInfo(currentUser, repo);
 
     logger.success(`Created fork: ${fork.fullName}`);
     return { fork, created: true };
