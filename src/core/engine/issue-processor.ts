@@ -479,7 +479,10 @@ export class IssueProcessor {
         branchName,
         issueData,
         defaultBranch,
-        isFork ? pushOwner : undefined
+        isFork ? pushOwner : undefined,
+        worktreePath,
+        diffStats,
+        issueNumber
       );
 
       this.stateManager.updateSessionMetrics(session.id, { prUrl });
@@ -1201,20 +1204,42 @@ Focus on making the tests pass while maintaining the intent of the original chan
     branchName: string,
     issueData: { title: string; body: string },
     baseBranch: string,
-    forkOwner?: string
+    forkOwner: string | undefined,
+    worktreePath: string,
+    diffStats: { files: number; insertions: number; deletions: number },
+    issueNumber: number
   ): Promise<string> {
     const prTitle = `fix: ${issueData.title}`;
+
+    // Get list of changed files for the PR body
+    let changedFilesList = "";
+    try {
+      const { execSync } = await import("node:child_process");
+      const filesOutput = execSync(`git diff --name-only ${baseBranch}...HEAD`, {
+        cwd: worktreePath,
+        encoding: "utf-8",
+      }).trim();
+      if (filesOutput) {
+        const files = filesOutput.split("\n").slice(0, 10); // Limit to first 10 files
+        changedFilesList = files.map((f) => `- \`${f}\``).join("\n");
+        if (diffStats.files > 10) {
+          changedFilesList += `\n- ... and ${diffStats.files - 10} more file(s)`;
+        }
+      }
+    } catch {
+      // Fall back to just stats if git command fails
+      changedFilesList = `${diffStats.files} file(s) changed`;
+    }
+
     const prBody = `## Summary
 
-This PR addresses the issue described below.
+Fixes #${issueNumber}
 
 ## Changes
 
-<!-- A brief description of the changes will be auto-generated -->
+${changedFilesList}
 
-## Original Issue
-
-${issueData.body ? issueData.body.slice(0, 1000) : "No description provided."}
+**Stats:** ${diffStats.files} file(s) changed, +${diffStats.insertions} insertions, -${diffStats.deletions} deletions
 
 ---
 🤖 Changes prepared with assistance from OSS-Agent`;

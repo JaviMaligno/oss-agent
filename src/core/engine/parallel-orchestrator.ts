@@ -7,6 +7,7 @@ import type { WorktreeManager } from "../git/worktree-manager.js";
 import { AIProvider } from "../ai/types.js";
 import { IssueProcessor, ProcessIssueOptions, ProcessIssueResult } from "./issue-processor.js";
 import { ConflictDetector, PreflightConflictResult } from "./conflict-detector.js";
+import { ReviewService } from "./review-service.js";
 
 export interface ParallelWorkOptions {
   /** List of issue URLs to process */
@@ -85,6 +86,7 @@ export class ParallelOrchestrator {
   private cancelAll = false;
   private currentStatus: ParallelStatus | null = null;
   private conflictDetector: ConflictDetector;
+  private reviewService: ReviewService;
 
   constructor(
     private config: Config,
@@ -97,6 +99,8 @@ export class ParallelOrchestrator {
     void _worktreeManager;
     // Initialize conflict detector
     this.conflictDetector = new ConflictDetector(stateManager);
+    // Initialize review service for automated PR review
+    this.reviewService = new ReviewService(config, stateManager, gitOps, aiProvider);
   }
 
   /**
@@ -313,7 +317,9 @@ export class ParallelOrchestrator {
         this.config,
         this.stateManager,
         this.gitOps,
-        this.aiProvider
+        this.aiProvider,
+        this.config.hardening,
+        this.reviewService
       );
 
       const processOptions: ProcessIssueOptions = {
