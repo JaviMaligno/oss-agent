@@ -11,6 +11,7 @@ import { AIProvider, QueryResult } from "../ai/types.js";
 import { GitOperations } from "../git/git-operations.js";
 import { PRService } from "../github/pr-service.js";
 import { StateManager } from "../state/state-manager.js";
+import { CICheckHandler, CIHandlerResult } from "./ci-handler.js";
 import { logger } from "../../infra/logger.js";
 
 export interface ReviewSuggestion {
@@ -32,6 +33,23 @@ export interface ReviewResult {
   commentPosted: boolean;
   commitSha?: string | undefined;
   durationMs: number;
+  ciResult?: CIHandlerResult | undefined;
+}
+
+export interface ReviewCIConfig {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  worktreePath: string;
+  branchName: string;
+  pushRemote: string;
+  maxIterations: number;
+  waitForChecks: boolean;
+  autoFix: boolean;
+  timeoutMs: number;
+  pollIntervalMs: number;
+  initialDelayMs: number;
+  maxBudgetPerFix: number;
 }
 
 export interface ReviewOptions {
@@ -44,6 +62,8 @@ export interface ReviewOptions {
   dryRun?: boolean | undefined;
   maxBudgetUsd?: number | undefined;
   mockMode?: boolean | undefined;
+  // CI config for reviewer's CI check/fix loop
+  ciConfig?: ReviewCIConfig | undefined;
 }
 
 export class ReviewService {
@@ -208,7 +228,7 @@ export class ReviewService {
     // Post review comment if enabled
     let commentPosted = false;
     if (options.postComment && !options.dryRun) {
-      logger.step(5, 5, "Posting review comment...");
+      logger.step(5, 6, "Posting review comment...");
       const comment = this.buildReviewComment(
         reviewData,
         autoFixedCount,
@@ -217,6 +237,45 @@ export class ReviewService {
       await this.postPRComment(owner, repo, prNumber, comment);
       commentPosted = true;
       logger.success("Review comment posted");
+    }
+
+    // Run CI check/fix loop if ciConfig is provided
+    let ciResult: CIHandlerResult | undefined;
+    if (options.ciConfig && !options.dryRun) {
+      logger.step(6, 6, "Running CI checks...");
+      try {
+        const ciHandler = new CICheckHandler(this.prService, this.gitOps, this.aiProvider);
+
+        ciResult = await ciHandler.handleChecks(
+          options.ciConfig.owner,
+          options.ciConfig.repo,
+          options.ciConfig.prNumber,
+          options.ciConfig.worktreePath,
+          options.ciConfig.branchName,
+          {
+            maxIterations: options.ciConfig.maxIterations,
+            waitForChecks: options.ciConfig.waitForChecks,
+            autoFix: options.ciConfig.autoFix,
+            timeoutMs: options.ciConfig.timeoutMs,
+            pollIntervalMs: options.ciConfig.pollIntervalMs,
+            initialDelayMs: options.ciConfig.initialDelayMs,
+            maxBudgetPerFix: options.ciConfig.maxBudgetPerFix,
+            pushRemote: options.ciConfig.pushRemote,
+            maxTurnsPerFix: 50,
+          }
+        );
+
+        if (ciResult.finalStatus === "success") {
+          logger.success("All CI checks passed after reviewer phase!");
+        } else if (ciResult.finalStatus === "no_checks") {
+          logger.info("No CI checks configured for this repository");
+        } else {
+          logger.warn(`CI handling finished with status: ${ciResult.finalStatus}`);
+          logger.info(ciResult.summary);
+        }
+      } catch (error) {
+        logger.error(`Reviewer CI check handling failed: ${error}`);
+      }
     }
 
     const durationMs = Date.now() - startTime;
@@ -241,6 +300,7 @@ export class ReviewService {
       commentPosted,
       commitSha,
       durationMs,
+      ciResult,
     };
   }
 

@@ -25,7 +25,7 @@ const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const GH_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
 
 /** Default maximum iterations for local test fix loop */
-const DEFAULT_MAX_LOCAL_FIX_ITERATIONS = 3;
+const DEFAULT_MAX_LOCAL_FIX_ITERATIONS = 5;
 
 export interface ProcessIssueOptions {
   /** URL of the GitHub issue */
@@ -541,7 +541,7 @@ export class IssueProcessor {
             worktreePath,
             branchName,
             {
-              maxIterations: ciConfig?.maxFixIterations ?? 3,
+              maxIterations: ciConfig?.maxFixIterations ?? 5,
               waitForChecks: true,
               autoFix: shouldAutoFixCI,
               timeoutMs: ciConfig?.timeoutMs ?? 30 * 60 * 1000,
@@ -570,42 +570,61 @@ export class IssueProcessor {
       }
     }
 
-    // Run automated review AFTER CI passes (if enabled and CI succeeded or no checks)
+    // Run automated review AFTER coder phase completes (regardless of CI status)
+    // The reviewer will also check CI and try to fix failures
     const reviewConfig = this.config.oss?.qualityGates?.review;
     const shouldRunReview = options.review ?? reviewConfig?.enabled ?? true;
-    const ciPassed =
-      !ciResult || ciResult.finalStatus === "success" || ciResult.finalStatus === "no_checks";
 
     logger.debug("Review check", {
       skipPR: options.skipPR,
       shouldRunReview,
       prUrl: !!prUrl,
       hasReviewService: !!this.reviewService,
-      ciPassed,
       ciStatus: ciResult?.finalStatus,
     });
 
-    if (!options.skipPR && shouldRunReview && prUrl && this.reviewService && ciPassed) {
-      if (ciResult?.selfHealed) {
-        logger.info(
-          "CI passed after self-healing (no code changes needed). Running automated review..."
-        );
-      } else {
-        logger.info("Running automated review...");
-      }
+    if (!options.skipPR && shouldRunReview && prUrl && this.reviewService) {
+      logger.info("Running automated review...");
       try {
+        // Parse PR info for CI handling
+        const prService = new PRService();
+        const parsedPR = prService.parsePRUrl(prUrl);
+
         const reviewResult = await this.reviewService.review({
           prUrl,
           autoFix: reviewConfig?.autoFix ?? true,
           postComment: reviewConfig?.postComment ?? true,
           postApproval: reviewConfig?.postApproval ?? false,
           maxBudgetUsd: reviewConfig?.maxBudgetUsd ?? 2,
+          // Pass CI config for reviewer's CI check loop
+          ciConfig: parsedPR
+            ? {
+                owner: parsedPR.owner,
+                repo: parsedPR.repo,
+                prNumber: parsedPR.prNumber,
+                worktreePath,
+                branchName,
+                pushRemote,
+                maxIterations: ciConfig?.maxFixIterations ?? 5,
+                waitForChecks: shouldWaitForCI,
+                autoFix: shouldAutoFixCI,
+                timeoutMs: ciConfig?.timeoutMs ?? 30 * 60 * 1000,
+                pollIntervalMs: ciConfig?.pollIntervalMs ?? 30 * 1000,
+                initialDelayMs: ciConfig?.initialDelayMs ?? 15 * 1000,
+                maxBudgetPerFix: ciConfig?.maxBudgetPerFix ?? 2,
+              }
+            : undefined,
         });
 
         if (reviewResult.approved) {
           logger.success("PR approved by automated reviewer");
         } else {
           logger.warn(`PR has ${reviewResult.blockers.length} blocking issues`);
+        }
+
+        // Update ciResult with reviewer's CI result if available
+        if (reviewResult.ciResult) {
+          ciResult = reviewResult.ciResult;
         }
       } catch (error) {
         logger.error(`Automated review failed: ${error}`);
