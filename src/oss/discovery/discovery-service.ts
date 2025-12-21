@@ -40,6 +40,7 @@ export interface DiscoveryConfig {
   requireContributingGuide?: boolean | undefined;
   excludeArchived?: boolean | undefined;
   excludeForks?: boolean | undefined;
+  requireCi?: boolean | undefined; // Require CI/CD configuration (GitHub Actions, CircleCI, Travis CI)
 }
 
 // Re-export for CLI usage
@@ -116,9 +117,9 @@ export class DiscoveryService {
 
     switch (config.mode) {
       case "direct":
-        return this.discoverDirect(config.directRepos ?? []);
+        return this.discoverDirect(config.directRepos ?? [], config);
       case "search":
-        return this.discoverBySearch(searchCriteria);
+        return this.discoverBySearch(searchCriteria, config);
       case "intelligent": {
         // Use AI agent if query provided and AI is available
         if (config.intelligentQuery && this.aiProvider) {
@@ -126,10 +127,13 @@ export class DiscoveryService {
         }
         // Fallback to search with scoring
         logger.debug("AI not available or no query, falling back to scored search");
-        const candidates = await this.discoverBySearch({
-          ...searchCriteria,
-          hasGoodFirstIssues: true,
-        });
+        const candidates = await this.discoverBySearch(
+          {
+            ...searchCriteria,
+            hasGoodFirstIssues: true,
+          },
+          config
+        );
         return this.sortByScore(candidates);
       }
       case "curated":
@@ -188,6 +192,19 @@ export class DiscoveryService {
       })
     );
 
+    // Apply CI filter if required
+    if (config.requireCi) {
+      const ciFiltered = await Promise.all(
+        enriched.map(async (p) => {
+          const [owner, repo] = p.fullName.split("/");
+          if (!owner || !repo) return null;
+          const hasCI = await this.hasCiConfiguration(owner, repo);
+          return hasCI ? p : null;
+        })
+      );
+      return ciFiltered.filter((p) => p !== null);
+    }
+
     return enriched;
   }
 
@@ -244,6 +261,15 @@ export class DiscoveryService {
             ) {
               continue;
             }
+
+            // Apply CI filter if required
+            if (config.requireCi) {
+              const [owner, repo] = project.fullName.split("/");
+              if (!owner || !repo) continue;
+              const hasCI = await this.hasCiConfiguration(owner, repo);
+              if (!hasCI) continue;
+            }
+
             allProjects.push(project);
           }
         } catch (error) {
@@ -319,13 +345,21 @@ export class DiscoveryService {
   /**
    * Discover by explicit repository list
    */
-  async discoverDirect(repos: string[]): Promise<Project[]> {
+  async discoverDirect(repos: string[], config?: DiscoveryConfig): Promise<Project[]> {
     const projects: Project[] = [];
 
     for (const repoRef of repos) {
       try {
         const project = await this.getProjectInfo(repoRef);
         if (project) {
+          // Apply CI filter if required
+          if (config?.requireCi) {
+            const [owner, repo] = project.fullName.split("/");
+            if (!owner || !repo) continue;
+            const hasCI = await this.hasCiConfiguration(owner, repo);
+            if (!hasCI) continue;
+          }
+
           projects.push(project);
         }
       } catch (error) {
@@ -339,13 +373,32 @@ export class DiscoveryService {
   /**
    * Discover by GitHub search
    */
-  async discoverBySearch(criteria: SearchCriteria, limit = 30): Promise<Project[]> {
+  async discoverBySearch(
+    criteria: SearchCriteria,
+    config?: DiscoveryConfig,
+    limit = 30
+  ): Promise<Project[]> {
     const query = this.buildSearchQuery(criteria);
     logger.debug(`Search query: ${query}`);
 
     try {
       const results = await this.searchRepositories(query, limit);
-      return results.map((r) => this.mapSearchResultToProject(r));
+      let projects = results.map((r) => this.mapSearchResultToProject(r));
+
+      // Apply CI filter if required
+      if (config?.requireCi) {
+        const ciFiltered = await Promise.all(
+          projects.map(async (p) => {
+            const [owner, repo] = p.fullName.split("/");
+            if (!owner || !repo) return null;
+            const hasCI = await this.hasCiConfiguration(owner, repo);
+            return hasCI ? p : null;
+          })
+        );
+        projects = ciFiltered.filter((p) => p !== null);
+      }
+
+      return projects;
     } catch (error) {
       logger.error(`Search failed: ${error}`);
       return [];
@@ -585,6 +638,78 @@ export class DiscoveryService {
         fileList.includes(".github/contributing.md")
       );
     } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Check if repo has CI/CD configuration
+   * Checks for GitHub Actions workflows, CircleCI, Travis CI, and other CI providers
+   */
+  async hasCiConfiguration(owner: string, repo: string): Promise<boolean> {
+    try {
+      // Strategy 1: Check for .github/workflows directory (GitHub Actions)
+      try {
+        const workflowsResult = await this.gh([
+          "api",
+          `repos/${owner}/${repo}/contents/.github/workflows`,
+          "--jq",
+          "length",
+        ]);
+        const workflowCount = parseInt(workflowsResult.trim());
+        if (workflowCount > 0) {
+          return true;
+        }
+      } catch {
+        // .github/workflows directory doesn't exist, continue checking other CI providers
+      }
+
+      // Strategy 2: Check for CI config files in root
+      const files = await this.gh(["api", `repos/${owner}/${repo}/contents`, "--jq", ".[].name"]);
+      const fileList = files.split("\n").filter(Boolean);
+
+      // Check for various CI config files
+      const ciConfigFiles = [
+        ".travis.yml",
+        ".travis.yaml",
+        ".circleci",
+        "circle.yml",
+        "appveyor.yml",
+        ".appveyor.yml",
+        "azure-pipelines.yml",
+        "buildkite.yml",
+        ".buildkite.yml",
+        "jenkins.yml",
+        ".jenkins.yml",
+        "gitlab-ci.yml",
+        ".gitlab-ci.yml",
+      ];
+
+      const hasCiConfig = ciConfigFiles.some((configFile) => fileList.includes(configFile));
+      if (hasCiConfig) {
+        return true;
+      }
+
+      // Strategy 3: Check for CircleCI config directory
+      if (fileList.includes(".circleci")) {
+        try {
+          const circleciResult = await this.gh([
+            "api",
+            `repos/${owner}/${repo}/contents/.circleci`,
+            "--jq",
+            "length",
+          ]);
+          const circleciFileCount = parseInt(circleciResult.trim());
+          return circleciFileCount > 0;
+        } catch {
+          // .circleci directory exists but can't read contents
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      logger.debug(`Failed to check CI configuration for ${owner}/${repo}: ${error}`);
       return false;
     }
   }
