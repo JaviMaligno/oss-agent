@@ -294,6 +294,28 @@ export const AUTOMATED_FEEDBACK_DETECTION: Record<string, AutomatedToolDetection
     configFiles: [".pre-commit-config.yaml"],
     prCommentAuthors: ["pre-commit-ci[bot]"],
   },
+
+  "github-actions-lint": {
+    configFiles: [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+    prCommentAuthors: ["github-actions[bot]"],
+  },
+
+  circleci: {
+    configFiles: [".circleci/config.yml", ".circleci/config.yaml"],
+    prCommentAuthors: [],
+  },
+
+  travisci: {
+    configFiles: [".travis.yml", ".travis.yaml"],
+    prCommentAuthors: [],
+  },
+
+  snyk: {
+    configFiles: [".snyk"],
+    githubApp: "snyk",
+    prCommentAuthors: ["snyk-bot"],
+    checkBadge: /snyk\.io/,
+  },
 };
 
 /**
