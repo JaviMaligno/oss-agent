@@ -473,25 +473,50 @@ export class IssueProcessor {
     let prUrl: string | undefined;
     if (!options.skipPR) {
       logger.info("Creating pull request...");
-      prUrl = await this.createPullRequest(
-        owner,
-        repo,
-        branchName,
-        issueData,
-        defaultBranch,
-        isFork ? pushOwner : undefined,
-        worktreePath,
-        diffStats,
-        issueNumber
-      );
+      try {
+        prUrl = await this.createPullRequest(
+          owner,
+          repo,
+          branchName,
+          issueData,
+          defaultBranch,
+          isFork ? pushOwner : undefined,
+          worktreePath,
+          diffStats,
+          issueNumber
+        );
 
-      this.stateManager.updateSessionMetrics(session.id, { prUrl });
-      this.stateManager.transitionIssue(issue.id, "pr_created", `PR created: ${prUrl}`, session.id);
-      issue.state = "pr_created";
-      issue.hasLinkedPR = true;
-      issue.linkedPRUrl = prUrl;
-      this.stateManager.saveIssue(issue);
-      this.stateManager.saveIssue(issue);
+        this.stateManager.updateSessionMetrics(session.id, { prUrl });
+        this.stateManager.transitionIssue(
+          issue.id,
+          "pr_created",
+          `PR created: ${prUrl}`,
+          session.id
+        );
+        issue.state = "pr_created";
+        issue.hasLinkedPR = true;
+        issue.linkedPRUrl = prUrl;
+        this.stateManager.saveIssue(issue);
+      } catch (prError) {
+        const errorMsg = prError instanceof Error ? prError.message : String(prError);
+        // Check if PR already exists - extract URL and continue with CI/review
+        const existingPrMatch = errorMsg.match(/already exists:\s*(https:\/\/github\.com\/[^\s]+)/);
+        if (existingPrMatch?.[1]) {
+          prUrl = existingPrMatch[1];
+          logger.info(`PR already exists: ${prUrl}`);
+          logger.info(
+            "Commits were pushed to existing PR, continuing with CI checks and review..."
+          );
+
+          this.stateManager.updateSessionMetrics(session.id, { prUrl });
+          issue.hasLinkedPR = true;
+          issue.linkedPRUrl = prUrl;
+          this.stateManager.saveIssue(issue);
+        } else {
+          // Re-throw if it's not a "PR already exists" error
+          throw prError;
+        }
+      }
     }
 
     // Wait for CI checks and auto-fix if enabled
