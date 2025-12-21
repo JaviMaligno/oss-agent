@@ -21,6 +21,14 @@ export interface ParallelWorkOptions {
   skipConflictCheck?: boolean;
   /** Progress callback */
   onProgress?: (status: ParallelStatus) => void;
+  /** Resume from existing session */
+  resume?: boolean;
+  /** Automatically review PR after creation */
+  review?: boolean;
+  /** Wait for CI checks after PR creation */
+  waitForCIChecks?: boolean;
+  /** Auto-fix failed CI checks */
+  autoFixCI?: boolean;
 }
 
 export interface ParallelStatus {
@@ -319,6 +327,22 @@ export class ParallelOrchestrator {
       if (options.maxBudgetUsd !== undefined) {
         // Distribute budget across issues
         processOptions.maxBudgetUsd = options.maxBudgetUsd / options.issueUrls.length;
+      }
+
+      if (options.resume === true) {
+        processOptions.resume = true;
+      }
+
+      if (options.review === true) {
+        processOptions.review = true;
+      }
+
+      if (options.waitForCIChecks !== undefined) {
+        processOptions.waitForCIChecks = options.waitForCIChecks;
+      }
+
+      if (options.autoFixCI !== undefined) {
+        processOptions.autoFixCI = options.autoFixCI;
       }
 
       const result = await processor.processIssue(processOptions);

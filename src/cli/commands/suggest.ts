@@ -17,7 +17,8 @@ export function createSuggestCommand(): Command {
     .option("--no-pr-filter", "Include issues that may already have PRs")
     .option("--include-assigned", "Include issues that are assigned to someone")
     .option("--include-closed", "Include closed issues (default: open only)")
-    .option("--score", "Show issue scores", false)
+    .option("--score", "Show legacy issue scores", false)
+    .option("--roi", "Show ROI analysis (feasibility × impact / cost)", false)
     .option("--json", "Output as JSON", false)
     .option("-v, --verbose", "Enable verbose output", false)
     .action(async (repo: string | undefined, options: SuggestOptions) => {
@@ -44,6 +45,7 @@ interface SuggestOptions {
   includeAssigned: boolean;
   includeClosed: boolean;
   score: boolean;
+  roi: boolean;
   json: boolean;
   verbose: boolean;
 }
@@ -134,7 +136,7 @@ async function runSuggest(repo: string | undefined, options: SuggestOptions): Pr
   }
 
   for (const issue of limitedIssues) {
-    displayIssue(issue, selectionService, options.score);
+    displayIssue(issue, selectionService, options.score, options.roi, project);
   }
 
   // Summary
@@ -150,7 +152,9 @@ async function runSuggest(repo: string | undefined, options: SuggestOptions): Pr
 function displayIssue(
   issue: GitHubIssueInfo,
   selectionService: SelectionService,
-  showScore: boolean
+  showScore: boolean,
+  showROI: boolean,
+  project?: Project
 ): void {
   console.error(pc.dim("─".repeat(60)));
   console.error("");
@@ -199,7 +203,54 @@ function displayIssue(
   }
   console.error(pc.dim(meta.join(" • ")));
 
-  // Score (if requested)
+  // ROI analysis (if requested)
+  if (showROI) {
+    const roi = selectionService.calculateROI(
+      issue,
+      project
+        ? {
+            stars: project.stars,
+            forks: project.forks,
+          }
+        : undefined
+    );
+    const f = roi.feasibility;
+    const i = roi.impact;
+    const c = roi.cost;
+
+    // Color code the ROI score
+    let roiColor: (s: string) => string;
+    if (roi.roi >= 70) {
+      roiColor = pc.green;
+    } else if (roi.roi >= 40) {
+      roiColor = pc.yellow;
+    } else {
+      roiColor = pc.red;
+    }
+
+    console.error(
+      pc.dim(`ROI: `) +
+        pc.bold(roiColor(roi.roi.toString())) +
+        pc.dim(` = √(F:${f.total}×I:${i.total}) × (100-C:${c.total})%`)
+    );
+    console.error(
+      pc.dim(
+        `  Feasibility: clarity:${f.clarity} scope:${f.scope} action:${f.actionability} guide:${f.guidance}`
+      )
+    );
+    console.error(
+      pc.dim(
+        `  Impact: repo:${i.repoPopularity} labels:${i.labelImportance} fresh:${i.freshness} interest:${i.communityInterest}`
+      )
+    );
+    console.error(
+      pc.dim(
+        `  Cost: scope:${c.estimatedScope} complexity:${c.complexitySignals} risk:${c.riskLabels} contention:${c.contention}`
+      )
+    );
+  }
+
+  // Legacy score (if requested)
   if (showScore) {
     const score = selectionService.scoreIssue(issue);
     const b = score.breakdown;

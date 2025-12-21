@@ -93,6 +93,9 @@ export const QualityGatesSchema = z.object({
   maxLinesChanged: z.number().int().positive().default(500),
   requireTestsPass: z.boolean().default(true),
   requireLintPass: z.boolean().default(true),
+  // Maximum iterations for local test fix loop before pushing
+  // This runs BEFORE pushing to catch issues early
+  maxLocalTestFixIterations: z.number().int().positive().default(3),
   // CI check configuration (optional)
   ciChecks: CICheckConfigSchema.optional(),
   // Automated review configuration (optional)

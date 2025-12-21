@@ -4,9 +4,9 @@ import { logger } from "../../infra/logger.js";
 import { loadConfig, expandPath } from "../config/loader.js";
 import { StateManager } from "../../core/state/state-manager.js";
 import { GitOperations } from "../../core/git/git-operations.js";
-import { IssueProcessor } from "../../core/engine/index.js";
+import { WorktreeManager } from "../../core/git/worktree-manager.js";
+import { ParallelOrchestrator } from "../../core/engine/parallel-orchestrator.js";
 import { createProvider } from "../../core/ai/provider-factory.js";
-import { ReviewService } from "../../core/engine/review-service.js";
 
 export function createWorkCommand(): Command {
   const command = new Command("work")
@@ -55,6 +55,7 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
   // Load configuration
   const config = loadConfig();
   const dataDir = expandPath(config.dataDir);
+  const hardeningConfig = config.hardening;
 
   // Validate issue URL
   if (!issueUrl.includes("github.com") || !issueUrl.includes("/issues/")) {
@@ -73,9 +74,9 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
 
   // Initialize services
   const stateManager = new StateManager(dataDir);
-  const gitOps = new GitOperations(config.git, dataDir);
+  const gitOps = new GitOperations(config.git, dataDir, hardeningConfig);
+  const worktreeManager = new WorktreeManager(gitOps, config.parallel);
   const aiProvider = await createProvider(config);
-  const reviewService = new ReviewService(config, stateManager, gitOps, aiProvider);
 
   // Check AI provider availability
   const available = await aiProvider.isAvailable();
@@ -94,34 +95,51 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
   logger.info(`AI Provider: ${pc.green(aiProvider.name)}`);
   console.error("");
 
-  // Create processor and run
-  const processor = new IssueProcessor(
+  // Create orchestrator with maxConcurrent=1 for single issue processing
+  const orchestrator = new ParallelOrchestrator(
     config,
     stateManager,
     gitOps,
-    aiProvider,
-    undefined,
-    reviewService
+    worktreeManager,
+    aiProvider
   );
 
   try {
-    const processOptions: Parameters<typeof processor.processIssue>[0] = {
-      issueUrl,
-      resume: options.resume,
-      skipPR: options.skipPr || options.dryRun,
-      review: options.review,
-      waitForCIChecks: options.waitForCi,
-      autoFixCI: options.autoFixCi,
+    const processOptions: Parameters<typeof orchestrator.processIssues>[0] = {
+      issueUrls: [issueUrl],
+      maxConcurrent: 1,
+      skipConflictCheck: true, // No need for conflict detection with a single issue
     };
+
     if (options.maxBudget !== undefined) {
       processOptions.maxBudgetUsd = options.maxBudget;
     }
-    const result = await processor.processIssue(processOptions);
+    if (options.skipPr || options.dryRun) {
+      processOptions.skipPR = true;
+    }
+    if (options.resume) {
+      processOptions.resume = true;
+    }
+    if (options.review) {
+      processOptions.review = true;
+    }
+    if (options.waitForCi !== undefined) {
+      processOptions.waitForCIChecks = options.waitForCi;
+    }
+    if (options.autoFixCi !== undefined) {
+      processOptions.autoFixCI = options.autoFixCi;
+    }
+
+    const orchestratorResult = await orchestrator.processIssues(processOptions);
 
     console.error("");
     logger.header("Results");
 
-    if (result.success) {
+    // Extract the single result
+    const result = orchestratorResult.results[0]?.result;
+    const error = orchestratorResult.results[0]?.error;
+
+    if (result?.success) {
       logger.success("Issue processed successfully!");
 
       console.error("");
@@ -154,12 +172,14 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
         }
       }
     } else {
-      logger.error(`Issue processing failed: ${result.error}`);
+      logger.error(`Issue processing failed: ${error ?? result?.error ?? "Unknown error"}`);
 
-      console.error("");
-      console.error(pc.dim("Partial metrics:"));
-      console.error(`  Turns: ${result.metrics.turns}`);
-      console.error(`  Duration: ${(result.metrics.durationMs / 1000).toFixed(1)}s`);
+      if (result) {
+        console.error("");
+        console.error(pc.dim("Partial metrics:"));
+        console.error(`  Turns: ${result.metrics.turns}`);
+        console.error(`  Duration: ${(result.metrics.durationMs / 1000).toFixed(1)}s`);
+      }
 
       stateManager.close();
       process.exit(1);

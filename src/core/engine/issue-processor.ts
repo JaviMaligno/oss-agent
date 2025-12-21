@@ -24,6 +24,9 @@ const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 /** Default timeout for GitHub CLI commands in milliseconds (2 minutes) */
 const GH_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
 
+/** Default maximum iterations for local test fix loop */
+const DEFAULT_MAX_LOCAL_FIX_ITERATIONS = 3;
+
 export interface ProcessIssueOptions {
   /** URL of the GitHub issue */
   issueUrl: string;
@@ -106,6 +109,15 @@ export class IssueProcessor {
       });
       this.healthChecker.setAIProvider(aiProvider);
     }
+  }
+
+  /**
+   * Get max iterations for local test fix loop from config
+   */
+  private get maxLocalTestFixIterations(): number {
+    return (
+      this.config.oss?.qualityGates?.maxLocalTestFixIterations ?? DEFAULT_MAX_LOCAL_FIX_ITERATIONS
+    );
   }
 
   /**
@@ -426,18 +438,36 @@ export class IssueProcessor {
       logger.debug("No uncommitted changes - Claude may have already committed");
     }
 
-    // Push branch (to fork remote if using fork workflow)
-    logger.step(6, 6, "Pushing branch...");
-    try {
-      await this.gitOps.push(worktreePath, branchName, { remote: pushRemote });
-    } catch (error) {
-      logger.warn(`Push failed: ${error}`);
-      logger.warn("Retrying with --no-verify to bypass hooks...");
-      await this.gitOps.push(worktreePath, branchName, {
-        remote: pushRemote,
-        skipVerification: true,
-      });
+    // Run local tests and fix before pushing (if tests exist)
+    logger.step(6, 7, "Running local tests before push...");
+    const localTestResult = await this.runLocalTestsWithFix(
+      worktreePath,
+      branchName,
+      issueData,
+      owner,
+      repo,
+      queryResult.sessionId
+    );
+
+    if (!localTestResult.success) {
+      logger.warn(`Local tests failed after ${this.maxLocalTestFixIterations} fix attempts`);
+      logger.warn(`Last error: ${localTestResult.lastError}`);
+      // Continue to push anyway - CI will catch remaining issues
     }
+
+    // Re-commit if there were fixes
+    if (localTestResult.fixesApplied > 0) {
+      const hasNewChanges = await this.gitOps.hasUncommittedChanges(worktreePath);
+      if (hasNewChanges) {
+        const fixCommitMessage = `fix: Address test failures for #${issueNumber}`;
+        await this.gitOps.commit(worktreePath, fixCommitMessage);
+        logger.info(`Committed ${localTestResult.fixesApplied} test fix(es)`);
+      }
+    }
+
+    // Push branch (to fork remote if using fork workflow)
+    logger.step(7, 7, "Pushing branch...");
+    await this.gitOps.push(worktreePath, branchName, { remote: pushRemote });
 
     // Create PR (if not skipped)
     let prUrl: string | undefined;
@@ -1013,6 +1043,117 @@ Changes prepared with assistance from OSS-Agent`;
         resolve({ success: false, output: err.message });
       });
     });
+  }
+
+  /**
+   * Run local tests and have AI fix failures before pushing
+   * Returns success if tests pass (or no tests exist)
+   */
+  private async runLocalTestsWithFix(
+    worktreePath: string,
+    branchName: string,
+    issueData: { title: string; body: string },
+    owner: string,
+    repo: string,
+    resumeSessionId?: string
+  ): Promise<{ success: boolean; fixesApplied: number; lastError?: string }> {
+    const testCmd = this.detectTestCommand(worktreePath);
+
+    if (!testCmd) {
+      logger.debug("No test command detected, skipping local test check");
+      return { success: true, fixesApplied: 0 };
+    }
+
+    let fixesApplied = 0;
+    let lastError: string | undefined;
+
+    const maxIterations = this.maxLocalTestFixIterations;
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+      logger.info(`Running local tests (attempt ${iteration + 1}/${maxIterations}): ${testCmd}`);
+
+      const testResult = await this.runCommand(testCmd, worktreePath);
+
+      if (testResult.success) {
+        logger.success("Local tests passed!");
+        return { success: true, fixesApplied };
+      }
+
+      // Tests failed - try to fix
+      lastError = testResult.output.slice(-2000); // Keep last 2000 chars
+      logger.warn(`Tests failed on attempt ${iteration + 1}`);
+
+      if (iteration === maxIterations - 1) {
+        // Last iteration, don't try to fix
+        break;
+      }
+
+      // Ask AI to fix the test failures
+      logger.info("Asking AI to fix test failures...");
+
+      const fixPrompt = `The tests are failing in this repository. Please analyze the error output and fix the issues.
+
+## Test Command
+\`${testCmd}\`
+
+## Error Output
+\`\`\`
+${testResult.output.slice(-3000)}
+\`\`\`
+
+## Context
+This is for issue: ${issueData.title}
+Branch: ${branchName}
+Repository: ${owner}/${repo}
+
+## Instructions
+1. Analyze the test failures carefully
+2. Fix the code that's causing the tests to fail
+3. Make sure your fixes don't break the original functionality
+4. If the tests are checking for something the implementation doesn't do correctly, fix the implementation
+5. If the tests themselves have issues (like type errors), fix the tests
+
+Focus on making the tests pass while maintaining the intent of the original changes.`;
+
+      try {
+        const queryOptions: Parameters<typeof this.aiProvider.query>[1] = {
+          cwd: worktreePath,
+          model: this.config.ai.model,
+          maxTurns: 30,
+          maxBudgetUsd: 2,
+        };
+        if (resumeSessionId) {
+          queryOptions.resumeSessionId = resumeSessionId;
+        }
+        const fixResult = await this.aiProvider.query(fixPrompt, queryOptions);
+
+        if (fixResult.success) {
+          fixesApplied++;
+          logger.info(`AI applied fix attempt ${fixesApplied}`);
+
+          // Commit the fix before next test run
+          const hasChanges = await this.gitOps.hasUncommittedChanges(worktreePath);
+          if (hasChanges) {
+            await this.gitOps.commit(
+              worktreePath,
+              `fix: Address test failures (attempt ${fixesApplied})`
+            );
+          }
+        } else {
+          logger.warn(`AI fix attempt failed: ${fixResult.error}`);
+        }
+      } catch (error) {
+        logger.error(`AI fix request failed: ${error}`);
+      }
+    }
+
+    const result: { success: boolean; fixesApplied: number; lastError?: string } = {
+      success: false,
+      fixesApplied,
+    };
+    if (lastError !== undefined) {
+      result.lastError = lastError;
+    }
+    return result;
   }
 
   /**

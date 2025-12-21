@@ -71,6 +71,7 @@ async function runAutonomous(options: RunOptions): Promise<void> {
         maxLinesChanged: 500,
         requireTestsPass: true,
         requireLintPass: true,
+        maxLocalTestFixIterations: 3,
       }
     );
     const conflictDetector = new ConflictDetector(stateManager);

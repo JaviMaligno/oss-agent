@@ -126,6 +126,7 @@ export function createConfigCommand(): Command {
             maxLinesChanged: 500,
             requireTestsPass: true,
             requireLintPass: true,
+            maxLocalTestFixIterations: 3,
           },
           queue: {
             minQueueSize: 5,

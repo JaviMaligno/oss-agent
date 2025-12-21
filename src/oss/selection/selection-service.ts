@@ -12,24 +12,84 @@ export interface SelectionConfig {
   state?: "open" | "closed" | "all" | undefined;
   /** Include issues that are assigned to someone (default: false) */
   includeAssigned?: boolean | undefined;
+  /** Sort by "score" (legacy) or "roi" (new). Default: "score" */
+  sortBy?: "score" | "roi" | undefined;
 }
 
+/**
+ * ROI-based issue scoring model
+ *
+ * ROI = (Feasibility × Impact) / Cost
+ *
+ * Higher ROI = better candidate for automated contribution
+ */
+export interface IssueROI {
+  /** Final ROI score (0-100, higher = better investment) */
+  roi: number;
+
+  /** Probability of successfully solving this issue (0-100) */
+  feasibility: {
+    /** Total feasibility score */
+    total: number;
+    /** Issue is well-documented with clear description (0-25) */
+    clarity: number;
+    /** Limited scope - few files/components affected (0-25) */
+    scope: number;
+    /** Has reproduction steps, code examples, structure (0-25) */
+    actionability: number;
+    /** Has solution hints or maintainer guidance (0-25) */
+    guidance: number;
+  };
+
+  /** Value/importance of solving this issue (0-100) */
+  impact: {
+    /** Total impact score */
+    total: number;
+    /** Repository popularity - stars, activity (0-35) */
+    repoPopularity: number;
+    /** Label importance - bug > feature > docs (0-30) */
+    labelImportance: number;
+    /** Issue freshness - newer issues more relevant (0-20) */
+    freshness: number;
+    /** Community interest - reactions, watchers (0-15) */
+    communityInterest: number;
+  };
+
+  /** Estimated effort/risk (0-100, lower = better) */
+  cost: {
+    /** Total cost score (inverted for ROI calculation) */
+    total: number;
+    /** Estimated number of files to modify (0-30) */
+    estimatedScope: number;
+    /** Complexity indicators in description (0-30) */
+    complexitySignals: number;
+    /** Risky labels - breaking, security, etc (0-25) */
+    riskLabels: number;
+    /** Contentious discussion or many failed attempts (0-15) */
+    contention: number;
+  };
+}
+
+/** Context for scoring - optional repo stats for impact calculation */
+export interface ScoringContext {
+  /** Repository stars */
+  stars?: number;
+  /** Repository forks */
+  forks?: number;
+  /** Is repo actively maintained */
+  isActive?: boolean;
+}
+
+// Keep old interface for backwards compatibility
 export interface IssueScore {
   total: number;
   breakdown: {
-    /** Score based on issue description quality (0-20) */
     complexity: number;
-    /** Score based on comment activity (0-20) */
     engagement: number;
-    /** Score based on issue age (0-25) */
     recency: number;
-    /** Score based on helpful labels (can be negative for complex labels) (-15 to 25) */
     labels: number;
-    /** Score based on title quality (0-15) */
     clarity: number;
-    /** Score based on code references and scope indicators (-20 to 15) */
     codeScope: number;
-    /** Score based on reproduction steps and structure (0-20) */
     actionability: number;
   };
 }
@@ -74,6 +134,7 @@ export class SelectionService {
       limit: config?.limit ?? 30,
       state: config?.state ?? "open",
       includeAssigned: config?.includeAssigned ?? false,
+      sortBy: config?.sortBy ?? "score",
     };
 
     logger.debug(`Finding issues for ${project.fullName}`);
@@ -89,16 +150,34 @@ export class SelectionService {
         filtered = await this.filterOutIssuesWithPRs(project.owner, project.name, filtered);
       }
 
-      // Sort by score
-      const scored = filtered.map((issue) => ({
-        issue,
-        score: this.scoreIssue(issue),
-      }));
+      // Sort by score or ROI
+      if (effectiveConfig.sortBy === "roi") {
+        // Use ROI scoring with project context
+        const context: ScoringContext = {
+          stars: project.stars,
+          forks: project.forks,
+        };
+        const scored = filtered.map((issue) => ({
+          issue,
+          roi: this.calculateROI(issue, context),
+        }));
 
-      return scored
-        .sort((a, b) => b.score.total - a.score.total)
-        .slice(0, effectiveConfig.limit)
-        .map((s) => s.issue);
+        return scored
+          .sort((a, b) => b.roi.roi - a.roi.roi)
+          .slice(0, effectiveConfig.limit)
+          .map((s) => s.issue);
+      } else {
+        // Use legacy score
+        const scored = filtered.map((issue) => ({
+          issue,
+          score: this.scoreIssue(issue),
+        }));
+
+        return scored
+          .sort((a, b) => b.score.total - a.score.total)
+          .slice(0, effectiveConfig.limit)
+          .map((s) => s.issue);
+      }
     } catch (error) {
       logger.error(`Failed to find issues for ${project.fullName}: ${error}`);
       return [];
@@ -316,6 +395,370 @@ export class SelectionService {
       breakdown.actionability;
 
     return { total, breakdown };
+  }
+
+  /**
+   * Calculate ROI (Return on Investment) for an issue
+   *
+   * ROI = (Feasibility × Impact) / Cost
+   *
+   * @param issue - The issue to score
+   * @param context - Optional context with repo stats for better impact scoring
+   */
+  calculateROI(issue: GitHubIssueInfo, context?: ScoringContext): IssueROI {
+    const body = issue.body ?? "";
+    const bodyLower = body.toLowerCase();
+    const comments = issue.comments ?? [];
+
+    // ============================================
+    // FEASIBILITY (0-100): Can we solve this?
+    // ============================================
+    const feasibility = {
+      total: 0,
+      clarity: 0,
+      scope: 0,
+      actionability: 0,
+      guidance: 0,
+    };
+
+    // --- Clarity (0-25): Is the issue well-documented? ---
+    const bodyLength = body.length;
+    if (bodyLength >= 200 && bodyLength < 2000) {
+      feasibility.clarity = 25; // Well-described
+    } else if (bodyLength >= 100 && bodyLength < 200) {
+      feasibility.clarity = 18;
+    } else if (bodyLength >= 2000 && bodyLength < 5000) {
+      feasibility.clarity = 15; // Detailed but long
+    } else if (bodyLength >= 5000) {
+      feasibility.clarity = 8; // Very long, potentially complex
+    } else {
+      feasibility.clarity = 5; // Too short
+    }
+
+    // Title quality bonus
+    const titleWords = issue.title.split(/\s+/).length;
+    if (titleWords >= 5 && titleWords <= 12) {
+      feasibility.clarity = Math.min(25, feasibility.clarity + 5);
+    }
+
+    // --- Scope (0-25): How focused is the change? ---
+    // Count file path references
+    const filePathPattern = /(?:^|[\s`'"])([a-zA-Z0-9_.\-/]+\.[a-zA-Z]{1,5})(?:[\s`'":,]|$)/g;
+    const filePaths = body.match(filePathPattern) ?? [];
+    const uniqueFilePaths = new Set(filePaths.map((p) => p.trim()));
+
+    if (uniqueFilePaths.size === 0) {
+      feasibility.scope = 15; // Unknown scope - assume moderate
+    } else if (uniqueFilePaths.size === 1) {
+      feasibility.scope = 25; // Single file - ideal
+    } else if (uniqueFilePaths.size <= 3) {
+      feasibility.scope = 20; // Few files - good
+    } else if (uniqueFilePaths.size <= 5) {
+      feasibility.scope = 10; // Several files
+    } else {
+      feasibility.scope = 3; // Many files - complex
+    }
+
+    // Penalize cross-cutting changes
+    const crossCuttingPatterns = [
+      /multiple (files|components|modules|packages)/i,
+      /across the codebase/i,
+      /refactor(ing)?\s+(the|all|entire)/i,
+      /migration/i,
+      /throughout/i,
+    ];
+    if (crossCuttingPatterns.some((p) => p.test(body))) {
+      feasibility.scope = Math.max(0, feasibility.scope - 10);
+    }
+
+    // --- Actionability (0-25): Can we act on this? ---
+    // Reproduction steps
+    if (
+      /steps to reproduce/i.test(body) ||
+      /how to reproduce/i.test(body) ||
+      /reproduction/i.test(body)
+    ) {
+      feasibility.actionability += 8;
+    }
+
+    // Numbered lists (structured info)
+    if (/\n\s*\d+\.\s+/g.test(body)) {
+      feasibility.actionability += 4;
+    }
+
+    // Expected vs actual behavior
+    if (
+      (/expected/i.test(body) && /actual/i.test(body)) ||
+      /should\s+(be|return|show|display)/i.test(body)
+    ) {
+      feasibility.actionability += 5;
+    }
+
+    // Code blocks
+    const codeBlockCount = (body.match(/```/g) ?? []).length / 2;
+    if (codeBlockCount >= 1 && codeBlockCount <= 3) {
+      feasibility.actionability += 5;
+    } else if (codeBlockCount > 0) {
+      feasibility.actionability += 2;
+    }
+
+    // Error messages / stack traces
+    if (
+      /error:/i.test(body) ||
+      /exception/i.test(body) ||
+      /at\s+[\w.]+\s+\([^)]+:\d+:\d+\)/i.test(body)
+    ) {
+      feasibility.actionability += 3;
+    }
+
+    feasibility.actionability = Math.min(25, feasibility.actionability);
+
+    // --- Guidance (0-25): Is there help available? ---
+    // Solution hints in issue body
+    if (
+      /possible (fix|solution)/i.test(body) ||
+      /could (be fixed|try)/i.test(body) ||
+      /suggestion:/i.test(body) ||
+      bodyLower.includes("i think the fix") ||
+      bodyLower.includes("the issue is in") ||
+      bodyLower.includes("the problem is")
+    ) {
+      feasibility.guidance += 10;
+    }
+
+    // Workaround mentioned
+    if (/workaround/i.test(body)) {
+      feasibility.guidance += 5;
+    }
+
+    // Maintainer comments with guidance
+    const maintainerKeywords = ["you could", "try ", "the fix", "look at", "check ", "should be"];
+    for (const comment of comments) {
+      if (maintainerKeywords.some((k) => comment.body.toLowerCase().includes(k))) {
+        feasibility.guidance += 5;
+        break;
+      }
+    }
+
+    // Markdown structure (organized issue)
+    if (/^#+\s+/m.test(body)) {
+      feasibility.guidance += 5;
+    }
+
+    feasibility.guidance = Math.min(25, feasibility.guidance);
+    feasibility.total =
+      feasibility.clarity + feasibility.scope + feasibility.actionability + feasibility.guidance;
+
+    // ============================================
+    // IMPACT (0-100): How valuable is solving this?
+    // ============================================
+    const impact = {
+      total: 0,
+      repoPopularity: 0,
+      labelImportance: 0,
+      freshness: 0,
+      communityInterest: 0,
+    };
+
+    // --- Repo Popularity (0-35): How popular is the repo? ---
+    if (context?.stars !== undefined) {
+      if (context.stars >= 10000) {
+        impact.repoPopularity = 35;
+      } else if (context.stars >= 5000) {
+        impact.repoPopularity = 30;
+      } else if (context.stars >= 1000) {
+        impact.repoPopularity = 25;
+      } else if (context.stars >= 500) {
+        impact.repoPopularity = 20;
+      } else if (context.stars >= 100) {
+        impact.repoPopularity = 15;
+      } else {
+        impact.repoPopularity = 10;
+      }
+    } else {
+      // Default when no context - assume moderate popularity
+      impact.repoPopularity = 20;
+    }
+
+    // --- Label Importance (0-30): How important is this type of issue? ---
+    const labels = issue.labels.map((l) => l.toLowerCase());
+
+    // High value labels
+    if (labels.some((l) => l.includes("bug") || l.includes("defect"))) {
+      impact.labelImportance += 20; // Bugs are high value
+    }
+    if (labels.some((l) => l.includes("regression"))) {
+      impact.labelImportance += 25; // Regressions are very high value
+    }
+    if (
+      labels.some(
+        (l) => l.includes("good first issue") || l.includes("help wanted") || l.includes("beginner")
+      )
+    ) {
+      impact.labelImportance += 15; // Explicitly wanted
+    }
+    if (labels.some((l) => l.includes("enhancement") || l.includes("feature"))) {
+      impact.labelImportance += 10;
+    }
+    if (labels.some((l) => l.includes("documentation") || l.includes("docs"))) {
+      impact.labelImportance += 5;
+    }
+
+    impact.labelImportance = Math.min(30, impact.labelImportance);
+
+    // --- Freshness (0-20): How recent is the issue? ---
+    const daysSinceCreated = Math.floor(
+      (Date.now() - issue.createdAt.getTime()) / (1000 * 60 * 60 * 24)
+    );
+    if (daysSinceCreated < 7) {
+      impact.freshness = 20;
+    } else if (daysSinceCreated < 14) {
+      impact.freshness = 18;
+    } else if (daysSinceCreated < 30) {
+      impact.freshness = 15;
+    } else if (daysSinceCreated < 90) {
+      impact.freshness = 10;
+    } else if (daysSinceCreated < 180) {
+      impact.freshness = 5;
+    } else {
+      impact.freshness = 2; // Very old issues
+    }
+
+    // --- Community Interest (0-15): Is there interest? ---
+    // Comment count as proxy for interest
+    const commentCount = comments.length;
+    if (commentCount >= 1 && commentCount <= 5) {
+      impact.communityInterest = 15; // Active discussion
+    } else if (commentCount > 5 && commentCount <= 10) {
+      impact.communityInterest = 10;
+    } else if (commentCount > 10) {
+      impact.communityInterest = 5; // Too much might be contentious
+    } else {
+      impact.communityInterest = 8; // No comments yet
+    }
+
+    impact.total =
+      impact.repoPopularity + impact.labelImportance + impact.freshness + impact.communityInterest;
+
+    // ============================================
+    // COST (0-100): How much effort/risk?
+    // ============================================
+    const cost = {
+      total: 0,
+      estimatedScope: 0,
+      complexitySignals: 0,
+      riskLabels: 0,
+      contention: 0,
+    };
+
+    // --- Estimated Scope (0-30): How many files to change? ---
+    if (uniqueFilePaths.size === 0) {
+      cost.estimatedScope = 15; // Unknown
+    } else if (uniqueFilePaths.size === 1) {
+      cost.estimatedScope = 5;
+    } else if (uniqueFilePaths.size <= 3) {
+      cost.estimatedScope = 12;
+    } else if (uniqueFilePaths.size <= 5) {
+      cost.estimatedScope = 20;
+    } else {
+      cost.estimatedScope = 30;
+    }
+
+    // Cross-cutting increases cost
+    if (crossCuttingPatterns.some((p) => p.test(body))) {
+      cost.estimatedScope = Math.min(30, cost.estimatedScope + 10);
+    }
+
+    // --- Complexity Signals (0-30): Does description indicate complexity? ---
+    const complexityIndicators = [
+      { pattern: /breaking change/i, weight: 15 },
+      { pattern: /backwards? compatib/i, weight: 10 },
+      { pattern: /performance/i, weight: 8 },
+      { pattern: /race condition/i, weight: 12 },
+      { pattern: /memory leak/i, weight: 10 },
+      { pattern: /concurrency/i, weight: 10 },
+      { pattern: /async(hronous)?/i, weight: 5 },
+      { pattern: /thread[- ]?safe/i, weight: 8 },
+      { pattern: /architecture/i, weight: 12 },
+      { pattern: /redesign/i, weight: 15 },
+    ];
+
+    for (const { pattern, weight } of complexityIndicators) {
+      if (pattern.test(body)) {
+        cost.complexitySignals += weight;
+      }
+    }
+    cost.complexitySignals = Math.min(30, cost.complexitySignals);
+
+    // --- Risk Labels (0-25): Dangerous labels? ---
+    const riskLabelPatterns = [
+      { pattern: "breaking", weight: 15 },
+      { pattern: "security", weight: 20 },
+      { pattern: "critical", weight: 10 },
+      { pattern: "major", weight: 8 },
+      { pattern: "performance", weight: 5 },
+      { pattern: "refactor", weight: 8 },
+    ];
+
+    for (const { pattern, weight } of riskLabelPatterns) {
+      if (labels.some((l) => l.includes(pattern))) {
+        cost.riskLabels += weight;
+      }
+    }
+    cost.riskLabels = Math.min(25, cost.riskLabels);
+
+    // --- Contention (0-15): Is there conflict/failed attempts? ---
+    if (commentCount > 15) {
+      cost.contention = 15; // Very contentious
+    } else if (commentCount > 10) {
+      cost.contention = 10;
+    } else if (commentCount > 5) {
+      cost.contention = 5;
+    }
+
+    // Check for signs of failed attempts or disagreement
+    const contentionPhrases = [
+      "won't fix",
+      "wontfix",
+      "not a bug",
+      "by design",
+      "duplicate",
+      "already tried",
+      "doesn't work",
+      "still broken",
+    ];
+    for (const comment of comments) {
+      if (contentionPhrases.some((p) => comment.body.toLowerCase().includes(p))) {
+        cost.contention = Math.min(15, cost.contention + 5);
+        break;
+      }
+    }
+
+    cost.total = cost.estimatedScope + cost.complexitySignals + cost.riskLabels + cost.contention;
+
+    // ============================================
+    // CALCULATE ROI
+    // ============================================
+    // ROI = sqrt(Feasibility × Impact) × (100 - Cost) / 100
+    //
+    // This formula:
+    // - Uses geometric mean of F and I (balances both dimensions)
+    // - Multiplies by cost factor (high cost reduces ROI proportionally)
+    // - Gives better distribution (typically 20-70 range vs everything being 100)
+    //
+    // Examples:
+    // - F=60, I=50, C=20: sqrt(3000) * 0.80 = 54.8 * 0.80 = 43.8
+    // - F=80, I=70, C=10: sqrt(5600) * 0.90 = 74.8 * 0.90 = 67.3
+    // - F=40, I=40, C=40: sqrt(1600) * 0.60 = 40.0 * 0.60 = 24.0
+    const rawROI = (Math.sqrt(feasibility.total * impact.total) * (100 - cost.total)) / 100;
+    const roi = Math.max(0, Math.min(100, Math.round(rawROI)));
+
+    return {
+      roi,
+      feasibility,
+      impact,
+      cost,
+    };
   }
 
   /**
