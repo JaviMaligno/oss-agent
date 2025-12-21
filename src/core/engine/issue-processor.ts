@@ -21,6 +21,9 @@ import { Config, HardeningConfig } from "../../types/config.js";
 /** Default timeout for test/lint commands in milliseconds (5 minutes) */
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Default timeout for GitHub CLI commands in milliseconds (2 minutes) */
+const GH_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
+
 export interface ProcessIssueOptions {
   /** URL of the GitHub issue */
   issueUrl: string;
@@ -515,6 +518,15 @@ export class IssueProcessor {
     const ciPassed =
       !ciResult || ciResult.finalStatus === "success" || ciResult.finalStatus === "no_checks";
 
+    logger.debug("Review check", {
+      skipPR: options.skipPR,
+      shouldRunReview,
+      prUrl: !!prUrl,
+      hasReviewService: !!this.reviewService,
+      ciPassed,
+      ciStatus: ciResult?.finalStatus,
+    });
+
     if (!options.skipPR && shouldRunReview && prUrl && this.reviewService && ciPassed) {
       if (ciResult?.selfHealed) {
         logger.info(
@@ -634,6 +646,22 @@ export class IssueProcessor {
 
       let stdout = "";
       let stderr = "";
+      let timedOut = false;
+
+      // Add timeout for gh command
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) {
+            proc.kill("SIGKILL");
+          }
+        }, 5000);
+      }, GH_COMMAND_TIMEOUT_MS);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutId);
+      };
 
       proc.stdout.on("data", (data: Buffer) => {
         stdout += data.toString();
@@ -644,6 +672,15 @@ export class IssueProcessor {
       });
 
       proc.on("close", (code) => {
+        cleanup();
+        if (timedOut) {
+          reject(
+            new Error(
+              `gh issue view timed out after ${GH_COMMAND_TIMEOUT_MS / 1000}s for ${owner}/${repo}#${issueNumber}`
+            )
+          );
+          return;
+        }
         if (code === 0) {
           try {
             const data = JSON.parse(stdout) as {
@@ -671,6 +708,11 @@ export class IssueProcessor {
         } else {
           reject(new Error(`gh issue view failed: ${stderr}`));
         }
+      });
+
+      proc.on("error", (error) => {
+        cleanup();
+        reject(new Error(`Failed to spawn gh: ${error.message}`));
       });
     });
   }
@@ -1057,6 +1099,22 @@ ${issueData.body ? issueData.body.slice(0, 1000) : "No description provided."}
 
       let stdout = "";
       let stderr = "";
+      let timedOut = false;
+
+      // Add timeout for gh command
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) {
+            proc.kill("SIGKILL");
+          }
+        }, 5000);
+      }, GH_COMMAND_TIMEOUT_MS);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutId);
+      };
 
       proc.stdout.on("data", (data: Buffer) => {
         stdout += data.toString();
@@ -1067,12 +1125,26 @@ ${issueData.body ? issueData.body.slice(0, 1000) : "No description provided."}
       });
 
       proc.on("close", (code) => {
+        cleanup();
+        if (timedOut) {
+          reject(
+            new Error(
+              `gh pr create timed out after ${GH_COMMAND_TIMEOUT_MS / 1000}s for ${owner}/${repo}`
+            )
+          );
+          return;
+        }
         if (code === 0) {
           // gh pr create outputs the PR URL
           resolve(stdout.trim());
         } else {
           reject(new Error(`gh pr create failed: ${stderr}`));
         }
+      });
+
+      proc.on("error", (error) => {
+        cleanup();
+        reject(new Error(`Failed to spawn gh: ${error.message}`));
       });
     });
   }

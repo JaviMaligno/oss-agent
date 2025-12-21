@@ -7,6 +7,9 @@ import { GitConfig, HardeningConfig } from "../../types/config.js";
 import { retry } from "../../infra/retry.js";
 import { getCircuitBreaker, CIRCUIT_OPERATIONS } from "../../infra/circuit-breaker.js";
 
+/** Default timeout for git network commands in milliseconds (5 minutes) */
+const GIT_NETWORK_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface CloneResult {
   path: string;
   defaultBranch: string;
@@ -721,6 +724,28 @@ export class GitOperations {
 
         let stdout = "";
         let stderr = "";
+        let timedOut = false;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+        // Add timeout for network commands to prevent hanging
+        if (isNetworkCommand) {
+          timeoutId = setTimeout(() => {
+            timedOut = true;
+            proc.kill("SIGTERM");
+            // Force kill after 5 seconds if still running
+            setTimeout(() => {
+              if (!proc.killed) {
+                proc.kill("SIGKILL");
+              }
+            }, 5000);
+          }, GIT_NETWORK_TIMEOUT_MS);
+        }
+
+        const cleanup = (): void => {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+          }
+        };
 
         proc.stdout.on("data", (data: Buffer) => {
           stdout += data.toString();
@@ -731,6 +756,16 @@ export class GitOperations {
         });
 
         proc.on("close", (code) => {
+          cleanup();
+          if (timedOut) {
+            const command = `git ${args.join(" ")}`;
+            reject(
+              new NetworkError(
+                `Git command timed out after ${GIT_NETWORK_TIMEOUT_MS / 1000}s: ${command}`
+              )
+            );
+            return;
+          }
           if (code === 0) {
             resolve(stdout);
           } else {
@@ -753,6 +788,7 @@ export class GitOperations {
         });
 
         proc.on("error", (error) => {
+          cleanup();
           reject(new GitOperationError(`Failed to spawn git: ${error.message}`, error));
         });
       });
@@ -798,6 +834,22 @@ export class GitOperations {
 
       let stdout = "";
       let stderr = "";
+      let timedOut = false;
+
+      // Add timeout for gh commands to prevent hanging
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) {
+            proc.kill("SIGKILL");
+          }
+        }, 5000);
+      }, GIT_NETWORK_TIMEOUT_MS);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutId);
+      };
 
       proc.stdout.on("data", (data: Buffer) => {
         stdout += data.toString();
@@ -808,6 +860,15 @@ export class GitOperations {
       });
 
       proc.on("close", (code) => {
+        cleanup();
+        if (timedOut) {
+          reject(
+            new Error(
+              `gh command timed out after ${GIT_NETWORK_TIMEOUT_MS / 1000}s: gh ${args.join(" ")}`
+            )
+          );
+          return;
+        }
         if (code === 0) {
           resolve(stdout);
         } else {
@@ -816,6 +877,7 @@ export class GitOperations {
       });
 
       proc.on("error", (error) => {
+        cleanup();
         reject(new Error(`Failed to spawn gh: ${error.message}`));
       });
     });
