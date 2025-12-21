@@ -202,11 +202,12 @@ function displayIssue(
   // Score (if requested)
   if (showScore) {
     const score = selectionService.scoreIssue(issue);
+    const b = score.breakdown;
     console.error(
       pc.dim(`Score: `) +
         pc.bold(pc.green(score.total.toString())) +
         pc.dim(
-          ` (complexity: ${score.breakdown.complexity}, recency: ${score.breakdown.recency}, labels: ${score.breakdown.labels})`
+          ` (desc:${b.complexity} eng:${b.engagement} age:${b.recency} lbl:${b.labels} title:${b.clarity} scope:${b.codeScope} action:${b.actionability})`
         )
     );
   }

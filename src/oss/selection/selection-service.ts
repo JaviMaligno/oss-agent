@@ -17,11 +17,20 @@ export interface SelectionConfig {
 export interface IssueScore {
   total: number;
   breakdown: {
+    /** Score based on issue description quality (0-20) */
     complexity: number;
+    /** Score based on comment activity (0-20) */
     engagement: number;
+    /** Score based on issue age (0-25) */
     recency: number;
+    /** Score based on helpful labels (can be negative for complex labels) (-15 to 25) */
     labels: number;
+    /** Score based on title quality (0-15) */
     clarity: number;
+    /** Score based on code references and scope indicators (-20 to 15) */
+    codeScope: number;
+    /** Score based on reproduction steps and structure (0-20) */
+    actionability: number;
   };
 }
 
@@ -98,6 +107,7 @@ export class SelectionService {
 
   /**
    * Score an issue for contribution suitability
+   * Higher scores indicate better candidates for automated contribution
    */
   scoreIssue(issue: GitHubIssueInfo): IssueScore {
     const breakdown = {
@@ -106,10 +116,15 @@ export class SelectionService {
       recency: 0,
       labels: 0,
       clarity: 0,
+      codeScope: 0,
+      actionability: 0,
     };
 
-    // Complexity scoring (prefer simpler issues)
-    const bodyLength = issue.body?.length ?? 0;
+    const body = issue.body ?? "";
+    const bodyLower = body.toLowerCase();
+
+    // === Complexity scoring (prefer well-described issues) ===
+    const bodyLength = body.length;
     if (bodyLength > 100 && bodyLength < 2000) {
       breakdown.complexity += 20; // Well-described but not overwhelming
     } else if (bodyLength >= 2000) {
@@ -118,7 +133,7 @@ export class SelectionService {
       breakdown.complexity += 5; // Too short, unclear
     }
 
-    // Engagement scoring (some engagement is good, too much might be contentious)
+    // === Engagement scoring (some engagement is good, too much might be contentious) ===
     const comments = issue.comments?.length ?? 0;
     if (comments === 0) {
       breakdown.engagement += 15; // Fresh issue, no contention
@@ -130,7 +145,7 @@ export class SelectionService {
       breakdown.engagement += 5; // Too much discussion, might be contentious
     }
 
-    // Recency scoring (prefer newer issues)
+    // === Recency scoring (prefer newer issues) ===
     const daysSinceCreated = Math.floor(
       (Date.now() - issue.createdAt.getTime()) / (1000 * 60 * 60 * 24)
     );
@@ -144,7 +159,7 @@ export class SelectionService {
       breakdown.recency += 5;
     }
 
-    // Label scoring
+    // === Label scoring (positive for beginner-friendly, negative for complex) ===
     const goodLabels = [
       "good first issue",
       "good-first-issue",
@@ -152,15 +167,17 @@ export class SelectionService {
       "help-wanted",
       "beginner",
       "easy",
+      "starter",
+      "low-hanging-fruit",
     ];
     const hasGoodLabel = issue.labels.some((l) =>
       goodLabels.some((gl) => l.toLowerCase().includes(gl.toLowerCase().replace(" ", "-")))
     );
     if (hasGoodLabel) {
-      breakdown.labels += 20;
+      breakdown.labels += 25;
     }
 
-    // Enhancement labels are usually easier than bugs
+    // Enhancement/feature labels are usually easier than bugs
     if (
       issue.labels.some(
         (l) => l.toLowerCase().includes("enhancement") || l.toLowerCase().includes("feature")
@@ -169,7 +186,31 @@ export class SelectionService {
       breakdown.labels += 5;
     }
 
-    // Clarity scoring based on title
+    // Bug labels with clear reproduction are good
+    if (issue.labels.some((l) => l.toLowerCase().includes("bug"))) {
+      breakdown.labels += 3;
+    }
+
+    // Complex/risky labels (negative scoring)
+    const complexLabels = [
+      "breaking",
+      "breaking-change",
+      "refactor",
+      "architecture",
+      "security",
+      "performance",
+      "critical",
+      "complex",
+      "major",
+    ];
+    const hasComplexLabel = issue.labels.some((l) =>
+      complexLabels.some((cl) => l.toLowerCase().includes(cl))
+    );
+    if (hasComplexLabel) {
+      breakdown.labels -= 15;
+    }
+
+    // === Clarity scoring based on title ===
     const titleWords = issue.title.split(/\s+/).length;
     if (titleWords >= 5 && titleWords <= 15) {
       breakdown.clarity += 15; // Good descriptive title
@@ -179,12 +220,100 @@ export class SelectionService {
       breakdown.clarity += 5; // Too short, unclear
     }
 
+    // === Code scope scoring (estimate how many files/areas affected) ===
+    // Count file path references (e.g., src/foo/bar.ts, ./components/Button.jsx)
+    const filePathPattern = /(?:^|[\s`'"])([a-zA-Z0-9_.\-/]+\.[a-zA-Z]{1,5})(?:[\s`'":,]|$)/g;
+    const filePaths = body.match(filePathPattern) ?? [];
+    const uniqueFilePaths = new Set(filePaths.map((p) => p.trim()));
+
+    if (uniqueFilePaths.size === 0) {
+      breakdown.codeScope += 10; // No specific files, might be simple or unclear
+    } else if (uniqueFilePaths.size === 1) {
+      breakdown.codeScope += 15; // Single file change - ideal
+    } else if (uniqueFilePaths.size <= 3) {
+      breakdown.codeScope += 5; // Few files - manageable
+    } else {
+      breakdown.codeScope -= 10; // Many files - complex scope
+    }
+
+    // Check for cross-cutting concerns (negative)
+    const crossCuttingPatterns = [
+      /multiple (files|components|modules)/i,
+      /across the codebase/i,
+      /refactor(ing)?\s+(the|all|entire)/i,
+      /breaking change/i,
+      /migration/i,
+    ];
+    const hasCrossCutting = crossCuttingPatterns.some((p) => p.test(body));
+    if (hasCrossCutting) {
+      breakdown.codeScope -= 10;
+    }
+
+    // === Actionability scoring (reproduction steps, structure, proposed solutions) ===
+    // Check for reproduction steps
+    const hasReproSteps =
+      /steps to reproduce/i.test(body) ||
+      /how to reproduce/i.test(body) ||
+      /reproduction/i.test(body) ||
+      /\n\s*\d+\.\s+/g.test(body); // Numbered list
+
+    if (hasReproSteps) {
+      breakdown.actionability += 8;
+    }
+
+    // Check for expected vs actual behavior
+    const hasExpectedActual =
+      (/expected/i.test(body) && /actual/i.test(body)) ||
+      /should\s+(be|return|show|display)/i.test(body);
+    if (hasExpectedActual) {
+      breakdown.actionability += 5;
+    }
+
+    // Check for code blocks (shows concrete examples)
+    const codeBlockCount = (body.match(/```/g) ?? []).length / 2;
+    if (codeBlockCount >= 1 && codeBlockCount <= 3) {
+      breakdown.actionability += 5; // Has code examples
+    } else if (codeBlockCount > 3) {
+      breakdown.actionability += 2; // Too many might be overwhelming
+    }
+
+    // Check for proposed solutions or hints
+    const hasSolutionHint =
+      /possible (fix|solution)/i.test(body) ||
+      /could (be fixed|try)/i.test(body) ||
+      /suggestion:/i.test(body) ||
+      /workaround/i.test(body) ||
+      bodyLower.includes("i think the fix") ||
+      bodyLower.includes("the issue is in");
+    if (hasSolutionHint) {
+      breakdown.actionability += 7;
+    }
+
+    // Check for markdown structure (headers indicate organized issue)
+    const hasHeaders = /^#+\s+/m.test(body);
+    if (hasHeaders) {
+      breakdown.actionability += 3;
+    }
+
+    // Check for stack traces or error messages (helpful for debugging)
+    const hasErrorInfo =
+      /error:/i.test(body) ||
+      /exception/i.test(body) ||
+      /stack\s*trace/i.test(body) ||
+      /at\s+[\w.]+\s+\([^)]+:\d+:\d+\)/i.test(body); // Stack trace pattern
+    if (hasErrorInfo) {
+      breakdown.actionability += 2;
+    }
+
+    // === Calculate total ===
     const total =
       breakdown.complexity +
       breakdown.engagement +
       breakdown.recency +
       breakdown.labels +
-      breakdown.clarity;
+      breakdown.clarity +
+      breakdown.codeScope +
+      breakdown.actionability;
 
     return { total, breakdown };
   }
