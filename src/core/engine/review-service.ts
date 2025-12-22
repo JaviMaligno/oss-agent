@@ -411,9 +411,33 @@ Review this PR for:
 3. **Security issues** - Vulnerabilities, unsafe patterns
 4. **Test coverage** - Missing tests for new functionality
 5. **Documentation** - Missing or outdated comments/docs
+6. **Debug artifacts** - Files or code that should not be committed (see below)
+7. **Unrelated changes** - Modifications not directly related to the PR's purpose
+
+## CRITICAL: Debug Artifacts Check (BLOCKER if found)
+
+Look carefully in the diff for:
+
+**Debug/Temp Files** (these should be DELETED, not committed):
+- Files named: \`debug.ts\`, \`debug-*.ts\`, \`*.debug.ts\`, \`*.debug.js\`
+- Files named: \`temp.ts\`, \`tmp.ts\`, \`scratch.ts\`, \`play.ts\`
+- Files named: \`test-*.ts\` that are NOT in a proper tests/test/__tests__ directory
+- Any file that appears to be created solely for debugging or experimentation
+
+**Debug Code** (should be removed):
+- \`console.log\` statements that appear to be debugging (not intentional output)
+- Commented-out code blocks that were added by this PR
+- TODO/FIXME comments added for debugging purposes
+
+**Unrelated Changes**:
+- Modifications to files that have no clear connection to the PR's stated purpose
+- Formatting-only changes to unrelated files
+- Changes to playground/example files not needed for the fix
+
+If you find ANY debug artifacts, mark them as BLOCKER severity. These must be removed before merge.
 
 For each issue found, categorize as:
-- **BLOCKER**: Must be fixed before merge (bugs, security issues)
+- **BLOCKER**: Must be fixed before merge (bugs, security issues, debug artifacts)
 - **MAJOR**: Should be fixed (significant quality issues)
 - **MINOR**: Nice to fix (style, minor improvements)
 - **NITPICK**: Optional suggestions
@@ -427,6 +451,11 @@ For each issue found, categorize as:
 You have permission to auto-fix issues. For any issue you can fix:
 1. Make the fix directly in the code
 2. Mark the suggestion with "AUTO-FIXED: true" in your output
+
+**PRIORITY auto-fixes (do these first):**
+- DELETE any debug/temp files (debug.ts, debug-*.ts, temp.ts, play.ts, etc.)
+- REVERT unrelated file changes using git checkout
+- Remove debug console.log statements
 
 Only auto-fix clear issues. Do NOT auto-fix:
 - Subjective style preferences

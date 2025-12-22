@@ -48,6 +48,8 @@ export interface ProcessIssueOptions {
   autoFixCI?: boolean | undefined;
   /** Maximum iterations for local test fix loop */
   maxLocalFixIterations?: number | undefined;
+  /** Single-session mode: coder runs tests and fixes in one session (reduces indexing time) */
+  singleSession?: boolean | undefined;
 }
 
 export interface ProcessIssueResult {
@@ -434,6 +436,18 @@ export class IssueProcessor {
     logger.step(5, 6, "Committing changes...");
     const hasUncommittedChanges = await this.gitOps.hasUncommittedChanges(worktreePath);
     if (hasUncommittedChanges) {
+      // Stage all changes first so we can validate
+      await this.gitOps.stageAll(worktreePath);
+
+      // Validate staged files for debug artifacts
+      const validation = await this.validateStagedFiles(worktreePath);
+      if (!validation.valid) {
+        logger.warn("Removing suspicious files before commit...");
+        await this.removeSuspiciousFiles(worktreePath, validation.suspiciousFiles);
+        // Re-stage remaining changes
+        await this.gitOps.stageAll(worktreePath);
+      }
+
       const commitMessage = this.buildCommitMessage(issueNumber, issueData.title);
       await this.gitOps.commit(worktreePath, commitMessage);
     } else {
@@ -831,15 +845,124 @@ ${issueData.body || "No description provided."}
 - Make minimal, focused changes that address the issue directly
 - Follow existing code style and patterns
 - Add comments only if the logic is complex
-- Do not modify unrelated code
+- Do not modify unrelated code or files not directly needed for the fix
 - If tests exist, make sure they pass
 - If a linter is configured, ensure no new errors
+
+## CRITICAL: Code Cleanliness Requirements
+
+Before committing, you MUST ensure:
+
+1. **NO debug files** - Do not create or commit any debug/temporary files such as:
+   - \`debug.ts\`, \`debug-*.ts\`, \`*.debug.ts\`
+   - \`test-*.ts\` (unless it's a proper test file in a tests directory)
+   - \`temp.ts\`, \`tmp.ts\`, \`scratch.ts\`, \`play.ts\`
+   - Any file created solely for debugging/experimentation
+
+2. **NO debug code** - Remove before committing:
+   - \`console.log\` statements added for debugging (unless the project uses them for output)
+   - Commented-out code blocks
+   - TODO comments you added (unless documenting known limitations)
+
+3. **Only related changes** - Your commit should ONLY include:
+   - Files directly needed to fix the issue
+   - Test files for the fix (in proper test directories)
+   - Documentation updates if relevant
+
+If you created any debug files during development, DELETE them before committing.
 
 ## Branch Information
 
 You are working on branch: \`${branchName}\`
 
 Begin by reading the issue carefully and exploring the relevant parts of the codebase.`;
+  }
+
+  /**
+   * Build prompt for single-session mode (includes test running and fixing)
+   * This reduces the number of Claude invocations by doing everything in one session.
+   */
+  private buildSingleSessionPrompt(
+    issueData: { title: string; body: string; labels: string[] },
+    owner: string,
+    repo: string,
+    branchName: string,
+    testCommand: string | null,
+    maxFixAttempts: number
+  ): string {
+    const testInstructions = testCommand
+      ? `
+## IMPORTANT: Test-Driven Implementation
+
+After implementing your fix, you MUST:
+
+1. **Run the test command**: \`${testCommand}\`
+2. **If tests fail**: Analyze the failure, fix your implementation, and run tests again
+3. **Repeat until tests pass** (maximum ${maxFixAttempts} attempts)
+4. **Only commit when all tests pass**
+
+This is a single-session workflow - you must complete ALL of the above before finishing.
+Do NOT ask for help or stop early. Keep iterating until tests pass or you've exhausted ${maxFixAttempts} attempts.
+
+If after ${maxFixAttempts} attempts tests still fail, commit your best effort with a note about remaining issues.
+`
+      : "";
+
+    return `You are working on a fix for a GitHub issue in the repository ${owner}/${repo}.
+
+## Issue Details
+
+**Title:** ${issueData.title}
+
+**Description:**
+${issueData.body || "No description provided."}
+
+**Labels:** ${issueData.labels.join(", ") || "None"}
+
+## Your Task
+
+1. **Analyze the issue** - Understand what needs to be fixed or implemented
+2. **Explore the codebase** - Find relevant files and understand the code structure
+3. **Implement the fix** - Make the necessary changes
+4. **Run tests and fix failures** - This is CRITICAL (see below)
+5. **Ensure code quality** - Make sure the code follows project conventions
+6. **Commit your changes** - Only after tests pass
+${testInstructions}
+## Important Guidelines
+
+- Make minimal, focused changes that address the issue directly
+- Follow existing code style and patterns
+- Add comments only if the logic is complex
+- Do not modify unrelated code or files not directly needed for the fix
+- You MUST run tests and iterate until they pass
+
+## CRITICAL: Code Cleanliness Requirements
+
+Before committing, you MUST ensure:
+
+1. **NO debug files** - Do not create or commit any debug/temporary files such as:
+   - \`debug.ts\`, \`debug-*.ts\`, \`*.debug.ts\`
+   - \`test-*.ts\` (unless it's a proper test file in a tests directory)
+   - \`temp.ts\`, \`tmp.ts\`, \`scratch.ts\`, \`play.ts\`
+   - Any file created solely for debugging/experimentation
+
+2. **NO debug code** - Remove before committing:
+   - \`console.log\` statements added for debugging (unless the project uses them for output)
+   - Commented-out code blocks
+   - TODO comments you added (unless documenting known limitations)
+
+3. **Only related changes** - Your commit should ONLY include:
+   - Files directly needed to fix the issue
+   - Test files for the fix (in proper test directories)
+   - Documentation updates if relevant
+
+If you created any debug files during development, DELETE them before committing.
+
+## Branch Information
+
+You are working on branch: \`${branchName}\`
+
+Begin by reading the issue carefully, then implement the fix, run tests, iterate until they pass, and commit.`;
   }
 
   /**
@@ -1362,5 +1485,112 @@ ${changedFilesList}
         reject(new Error(`Failed to spawn gh: ${error.message}`));
       });
     });
+  }
+
+  /**
+   * Validate staged files for debug artifacts before committing
+   * Returns list of suspicious files that should be reviewed/removed
+   */
+  private async validateStagedFiles(worktreePath: string): Promise<{
+    valid: boolean;
+    suspiciousFiles: Array<{ file: string; reason: string }>;
+  }> {
+    const suspiciousFiles: Array<{ file: string; reason: string }> = [];
+
+    // Patterns for debug/temp files
+    const debugFilePatterns = [
+      { pattern: /^debug\.ts$/, reason: "Debug file" },
+      { pattern: /^debug-.*\.ts$/, reason: "Debug file" },
+      { pattern: /\.debug\.ts$/, reason: "Debug file" },
+      { pattern: /\.debug\.js$/, reason: "Debug file" },
+      { pattern: /^temp\.ts$/, reason: "Temporary file" },
+      { pattern: /^tmp\.ts$/, reason: "Temporary file" },
+      { pattern: /^scratch\.ts$/, reason: "Scratch file" },
+      { pattern: /^play\.ts$/, reason: "Playground file" },
+      { pattern: /^test-.*\.ts$/, reason: "Test file outside test directory" },
+    ];
+
+    try {
+      // Get list of staged files
+      const { execSync } = await import("node:child_process");
+      const stagedOutput = execSync("git diff --cached --name-only", {
+        cwd: worktreePath,
+        encoding: "utf-8",
+      });
+
+      const stagedFiles = stagedOutput
+        .split("\n")
+        .map((f) => f.trim())
+        .filter((f) => f);
+
+      for (const file of stagedFiles) {
+        const basename = file.split("/").pop() ?? file;
+        const dirPath = file.split("/").slice(0, -1).join("/");
+
+        for (const { pattern, reason } of debugFilePatterns) {
+          if (pattern.test(basename)) {
+            // Special case: test-*.ts files in proper test directories are OK
+            if (
+              reason === "Test file outside test directory" &&
+              (dirPath.includes("test") ||
+                dirPath.includes("tests") ||
+                dirPath.includes("__tests__"))
+            ) {
+              continue;
+            }
+            suspiciousFiles.push({ file, reason });
+            break;
+          }
+        }
+      }
+
+      if (suspiciousFiles.length > 0) {
+        logger.warn(`Found ${suspiciousFiles.length} suspicious file(s) staged for commit:`);
+        for (const { file, reason } of suspiciousFiles) {
+          logger.warn(`  - ${file}: ${reason}`);
+        }
+      }
+
+      return {
+        valid: suspiciousFiles.length === 0,
+        suspiciousFiles,
+      };
+    } catch (error) {
+      // If we can't check, allow the commit (don't block on validation errors)
+      logger.debug(`Could not validate staged files: ${error}`);
+      return { valid: true, suspiciousFiles: [] };
+    }
+  }
+
+  /**
+   * Remove suspicious debug files from staging and filesystem
+   */
+  private async removeSuspiciousFiles(
+    worktreePath: string,
+    files: Array<{ file: string; reason: string }>
+  ): Promise<void> {
+    const { execSync } = await import("node:child_process");
+    const { unlinkSync, existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    for (const { file, reason } of files) {
+      try {
+        // Unstage the file
+        execSync(`git reset HEAD "${file}"`, {
+          cwd: worktreePath,
+          encoding: "utf-8",
+          stdio: "pipe",
+        });
+
+        // Delete the file if it exists
+        const fullPath = join(worktreePath, file);
+        if (existsSync(fullPath)) {
+          unlinkSync(fullPath);
+          logger.info(`Removed suspicious file: ${file} (${reason})`);
+        }
+      } catch (error) {
+        logger.debug(`Could not remove ${file}: ${error}`);
+      }
+    }
   }
 }

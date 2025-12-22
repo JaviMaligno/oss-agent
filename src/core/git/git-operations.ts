@@ -397,6 +397,13 @@ export class GitOperations {
   }
 
   /**
+   * Stage all changes (without committing)
+   */
+  async stageAll(cwd: string): Promise<void> {
+    await this.git(["add", "-A"], { cwd });
+  }
+
+  /**
    * Stage and commit changes
    */
   async commit(
