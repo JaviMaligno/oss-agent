@@ -55,6 +55,19 @@ oss-agent work https://github.com/owner/repo/issues/123 --skip-pr
 
 # Set a budget limit
 oss-agent work https://github.com/owner/repo/issues/123 --max-budget 5.00
+
+# Control CI behavior
+oss-agent work <url> --wait-for-ci          # Wait for CI checks (default)
+oss-agent work <url> --no-wait-for-ci       # Skip CI check waiting
+oss-agent work <url> --auto-fix-ci          # Auto-fix failed CI (default)
+oss-agent work <url> --no-auto-fix-ci       # Don't auto-fix CI failures
+oss-agent work <url> --max-fix-iterations 5 # Limit test fix attempts (default: 10)
+
+# Single-session mode (experimental)
+oss-agent work <url> --single-session       # Combine impl + tests in one AI session
+
+# Auto-review the PR after creation
+oss-agent work <url> --review
 ```
 
 ### View Status
@@ -116,6 +129,73 @@ oss-agent cleanup --completed
 oss-agent cleanup --issue owner/repo#123
 ```
 
+## Recommendations & Considerations
+
+### Cost Awareness
+
+⚠️ **AI usage can be expensive.** Each issue typically costs $0.50-$5.00 depending on complexity and model used.
+
+- **Budget limits are essential**: Configure `budget.perIssueLimitUsd` to prevent runaway costs
+- **Daily/monthly caps**: Set `budget.dailyLimitUsd` and `budget.monthlyLimitUsd` as safety nets
+- **Model choice matters**: Opus 4.5 (default) is more capable but costs ~10x more than Sonnet
+- **Large repositories**: Indexing time adds to cost. The first run on a repo is slower
+
+```bash
+# Check your current costs
+oss-agent status
+
+# Set conservative limits
+oss-agent config set budget.perIssueLimitUsd 2
+oss-agent config set budget.dailyLimitUsd 20
+```
+
+### Time Expectations
+
+Processing an issue typically takes **5-20 minutes** depending on:
+
+| Factor | Impact |
+|--------|--------|
+| Repository size | Large repos need more indexing time (first run: 5-10 min) |
+| Issue complexity | Simple fixes: 5 min, complex features: 15-20 min |
+| Test suite | Running tests adds time per iteration |
+| CI checks | Waiting for CI can add 5-15 min |
+
+**Tips for faster iteration:**
+- Use `--no-wait-for-ci` during development/testing
+- Use `--max-fix-iterations 3` to limit fix attempts
+- Consider `--single-session` for simpler issues (experimental)
+
+### Quality Trade-offs
+
+| Option | Quality | Speed | Cost |
+|--------|---------|-------|------|
+| Default settings | ✅ Best | Slower | Higher |
+| `--single-session` | ⚠️ May miss issues | Fast | Lower |
+| `--no-auto-fix-ci` | ⚠️ Manual fixes needed | Fast | Lower |
+| `--max-fix-iterations 3` | ⚠️ May leave failing tests | Moderate | Moderate |
+| Sonnet model | ⚠️ Less capable | Same | Much lower |
+
+### Best Practices
+
+1. **Start with dry-run**: Use `--dry-run` to preview what the agent would do
+2. **Monitor first few PRs**: Review the agent's work before trusting it fully
+3. **Set budget limits first**: Always configure budget before extensive use
+4. **Use review mode**: `--review` provides automated second-opinion on PRs
+5. **Fork-based workflow**: The agent auto-forks when you lack push access - this is the safest approach for OSS
+
+### When to Use Single-Session Mode
+
+`--single-session` combines implementation and test fixing in one AI session, reducing re-indexing time. Use it when:
+
+- ✅ Working on simple, well-defined issues
+- ✅ The test suite is fast
+- ✅ You're iterating quickly and will review manually
+
+**Avoid** single-session mode for:
+- ❌ Complex multi-file changes
+- ❌ Issues requiring multiple rounds of test fixes
+- ❌ When you need maximum reliability
+
 ## How It Works
 
 1. **Parse Issue**: Extracts issue details (title, body, labels) via `gh` CLI
@@ -174,31 +254,39 @@ Configuration is stored in `~/.oss-agent/config.json`:
 {
   "ai": {
     "executionMode": "cli",
-    "model": "claude-sonnet-4-20250514",
-    "maxTurns": 50,
-    "maxCostPerIssue": 1.0
+    "cli": {
+      "maxTurns": 50
+    }
   },
   "git": {
-    "autoCommit": true,
-    "commitPrefix": "fix:",
     "branchPrefix": "oss-agent",
     "defaultBranch": "main",
     "existingBranchStrategy": "auto-clean"
   },
-  "github": {
-    "createDraftPRs": true,
-    "addLabels": [],
-    "autoAssign": false
+  "budget": {
+    "dailyLimitUsd": 50,
+    "monthlyLimitUsd": 500,
+    "perIssueLimitUsd": 5
   },
   "parallel": {
     "maxConcurrentAgents": 3,
     "maxConcurrentPerProject": 2,
     "maxWorktrees": 10,
-    "maxWorktreesPerProject": 5,
-    "autoCleanupHours": 24,
     "enableConflictDetection": true
   }
 }
+```
+
+### AI Model Selection
+
+By default, no model is specified and Claude CLI uses the best available model (currently Opus 4.5). You can override this:
+
+```bash
+# Set a specific model
+oss-agent config set ai.model claude-sonnet-4-20250514
+
+# Remove model override (use best available)
+oss-agent config set ai.model ""
 ```
 
 ### Branch Handling Strategies
