@@ -15,6 +15,7 @@ export interface WebhookConfig {
   secret?: string | undefined;
   allowedRepos?: string[] | undefined;
   autoIterate?: boolean | undefined;
+  deleteBranchOnMerge?: boolean | undefined;
 }
 
 export interface WebhookEvent {
@@ -69,7 +70,11 @@ export class WebhookHandler {
       this.server.listen(this.config.port, () => {
         logger.success(`Webhook server listening on port ${this.config.port}`);
         logger.info("Configure GitHub webhook to POST to this URL");
-        logger.info("Events to subscribe: pull_request_review, pull_request_review_comment");
+        const events = ["pull_request_review", "pull_request_review_comment"];
+        if (this.config.deleteBranchOnMerge) {
+          events.push("pull_request");
+        }
+        logger.info(`Events to subscribe: ${events.join(", ")}`);
         resolve();
       });
     });
@@ -215,6 +220,41 @@ export class WebhookHandler {
       }
     }
 
+    // Handle PR merge event for branch deletion
+    if (eventType === "pull_request") {
+      const action = payload.action as string | undefined;
+      const pr = payload.pull_request as
+        | {
+            merged?: boolean;
+            html_url?: string;
+            head?: { ref?: string };
+          }
+        | undefined;
+      const repo = payload.repository as { full_name?: string } | undefined;
+
+      if (action === "closed" && pr?.merged === true) {
+        // Check if repo is allowed
+        if (
+          this.config.allowedRepos &&
+          this.config.allowedRepos.length > 0 &&
+          repo?.full_name &&
+          !this.config.allowedRepos.includes(repo.full_name)
+        ) {
+          logger.debug(`Ignoring merge from non-allowed repo: ${repo.full_name}`);
+          return false;
+        }
+
+        const branchName = pr.head?.ref;
+        logger.info(`PR merged: ${pr.html_url}`);
+
+        if (this.config.deleteBranchOnMerge && branchName && repo?.full_name) {
+          this.deleteBranch(repo.full_name, branchName);
+        }
+
+        return true;
+      }
+    }
+
     if (!prUrl) {
       logger.debug(`Ignoring event: ${eventType}`);
       return false;
@@ -272,5 +312,43 @@ export class WebhookHandler {
     });
 
     proc.unref();
+  }
+
+  /**
+   * Delete a branch after PR merge
+   */
+  private deleteBranch(repoFullName: string, branchName: string): void {
+    logger.info(`Deleting branch: ${branchName} from ${repoFullName}`);
+
+    // Use gh api to delete the branch
+    const proc = spawn(
+      "gh",
+      ["api", "-X", "DELETE", `/repos/${repoFullName}/git/refs/heads/${branchName}`],
+      {
+        cwd: process.cwd(),
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    proc.stdout?.on("data", (data: Buffer) => {
+      logger.debug(`[delete-branch] ${data.toString().trim()}`);
+    });
+
+    proc.stderr?.on("data", (data: Buffer) => {
+      const msg = data.toString().trim();
+      // Ignore "Reference does not exist" errors (branch already deleted)
+      if (!msg.includes("Reference does not exist")) {
+        logger.debug(`[delete-branch] ${msg}`);
+      }
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        logger.success(`Deleted branch: ${branchName}`);
+      } else {
+        // Code 422 means branch doesn't exist (already deleted or protected)
+        logger.debug(`Branch deletion exited with code ${code} for: ${branchName}`);
+      }
+    });
   }
 }

@@ -9,6 +9,7 @@ export function createWebhookCommand(): Command {
     .option("-s, --secret <secret>", "GitHub webhook secret for signature verification")
     .option("--repos <repos>", "Comma-separated list of allowed repositories (owner/repo)")
     .option("--no-auto-iterate", "Don't automatically trigger iterate on feedback")
+    .option("--delete-branch-on-merge", "Delete source branch when PR is merged", false)
     .option("-v, --verbose", "Enable verbose output", false)
     .action(async (options: WebhookOptions) => {
       if (options.verbose) {
@@ -31,6 +32,7 @@ interface WebhookOptions {
   secret?: string;
   repos?: string;
   autoIterate: boolean;
+  deleteBranchOnMerge: boolean;
   verbose: boolean;
 }
 
@@ -44,6 +46,7 @@ async function runWebhook(options: WebhookOptions): Promise<void> {
     logger.warn("No secret configured - webhook signatures will not be verified");
   }
   logger.info(`Auto-iterate: ${options.autoIterate ? "enabled" : "disabled"}`);
+  logger.info(`Delete branch on merge: ${options.deleteBranchOnMerge ? "enabled" : "disabled"}`);
 
   const allowedRepos = options.repos ? options.repos.split(",").map((r) => r.trim()) : undefined;
 
@@ -58,6 +61,7 @@ async function runWebhook(options: WebhookOptions): Promise<void> {
     secret: options.secret,
     allowedRepos,
     autoIterate: options.autoIterate,
+    deleteBranchOnMerge: options.deleteBranchOnMerge,
   });
 
   // Handle shutdown

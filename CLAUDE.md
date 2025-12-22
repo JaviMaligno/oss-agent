@@ -133,6 +133,8 @@ Configuration defined with Zod schemas in `src/types/config.ts`. Loaded from:
 - `webhook` - Start GitHub webhook server
   - `--port <port>` - Port to listen on
   - `--secret <secret>` - GitHub webhook secret
+  - `--delete-branch-on-merge` - Delete source branch when PR is merged
+  - `--no-auto-iterate` - Don't auto-trigger iterate on PR feedback
 
 ## TypeScript Conventions
 
