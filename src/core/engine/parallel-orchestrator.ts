@@ -32,6 +32,8 @@ export interface ParallelWorkOptions {
   autoFixCI?: boolean;
   /** Maximum iterations for local test fix loop */
   maxLocalFixIterations?: number;
+  /** Single-session mode: coder runs tests and fixes in one session (reduces indexing time) */
+  singleSession?: boolean;
 }
 
 export interface ParallelStatus {
@@ -355,6 +357,10 @@ export class ParallelOrchestrator {
 
       if (options.maxLocalFixIterations !== undefined) {
         processOptions.maxLocalFixIterations = options.maxLocalFixIterations;
+      }
+
+      if (options.singleSession !== undefined) {
+        processOptions.singleSession = options.singleSession;
       }
 
       const result = await processor.processIssue(processOptions);

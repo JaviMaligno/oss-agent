@@ -7,7 +7,8 @@ describe("ConfigSchema", () => {
 
     expect(result.mode).toBe("oss");
     expect(result.ai.provider).toBe("claude");
-    expect(result.ai.model).toBe("claude-sonnet-4-20250514");
+    // Model is optional - if not specified, Claude CLI uses its best available model
+    expect(result.ai.model).toBeUndefined();
     expect(result.budget.dailyLimitUsd).toBe(50);
     expect(result.budget.monthlyLimitUsd).toBe(500);
   });
@@ -39,7 +40,8 @@ describe("AIConfigSchema", () => {
     const result = AIConfigSchema.parse({});
 
     expect(result.provider).toBe("claude");
-    expect(result.model).toBe("claude-sonnet-4-20250514");
+    // Model is optional - if not specified, Claude CLI uses its best available model
+    expect(result.model).toBeUndefined();
     expect(result.apiKey).toBeUndefined();
   });
 

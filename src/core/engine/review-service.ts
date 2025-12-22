@@ -177,7 +177,7 @@ export class ReviewService {
     try {
       queryResult = await this.aiProvider.query(prompt, {
         cwd: worktreePath ?? process.cwd(),
-        model: this.config.ai.model,
+        ...(this.config.ai.model && { model: this.config.ai.model }),
         maxTurns: 30,
         ...(options.maxBudgetUsd !== undefined && { maxBudgetUsd: options.maxBudgetUsd }),
       });

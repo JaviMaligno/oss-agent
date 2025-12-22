@@ -22,6 +22,11 @@ export function createWorkCommand(): Command {
     .option("--auto-fix-ci", "Automatically fix failed CI checks (default: true)")
     .option("--no-auto-fix-ci", "Don't auto-fix failed CI checks")
     .option("--max-fix-iterations <n>", "Maximum local test fix iterations (default: 10)", parseInt)
+    .option(
+      "--single-session",
+      "Run tests and fixes in one AI session (reduces indexing time)",
+      false
+    )
     .option("-v, --verbose", "Enable verbose output", false)
     .action(async (issueUrl: string, options: WorkOptions) => {
       if (options.verbose) {
@@ -48,6 +53,7 @@ interface WorkOptions {
   waitForCi?: boolean;
   autoFixCi?: boolean;
   maxFixIterations?: number;
+  singleSession: boolean;
   verbose: boolean;
 }
 
@@ -133,6 +139,9 @@ async function runWork(issueUrl: string, options: WorkOptions): Promise<void> {
     }
     if (options.maxFixIterations !== undefined) {
       processOptions.maxLocalFixIterations = options.maxFixIterations;
+    }
+    if (options.singleSession) {
+      processOptions.singleSession = true;
     }
 
     const orchestratorResult = await orchestrator.processIssues(processOptions);

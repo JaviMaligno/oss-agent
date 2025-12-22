@@ -137,7 +137,7 @@ export class IterationHandler {
       issueUrl: issue.url,
       status: "active",
       provider: this.aiProvider.name,
-      model: this.config.ai.model,
+      model: this.config.ai.model ?? null,
       startedAt: new Date(),
       lastActivityAt: new Date(),
       completedAt: null,
@@ -167,7 +167,7 @@ export class IterationHandler {
     try {
       queryResult = await this.aiProvider.query(prompt, {
         cwd: workRecord.worktreePath,
-        model: this.config.ai.model,
+        ...(this.config.ai.model && { model: this.config.ai.model }),
         maxTurns: this.config.ai.cli.maxTurns,
         maxBudgetUsd: options.maxBudgetUsd ?? this.config.budget.perIssueLimitUsd,
       });

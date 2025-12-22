@@ -10,6 +10,21 @@ import { Watchdog } from "../../infra/watchdog.js";
 import type { QueryOptions } from "./types.js";
 
 /**
+ * Session cache entry for SDK session reuse
+ * Caches session IDs by worktree path to allow resuming sessions
+ * and potentially reducing re-indexing time.
+ */
+interface SessionCacheEntry {
+  sessionId: string;
+  createdAt: Date;
+  lastUsedAt: Date;
+  queryCount: number;
+}
+
+/** Default TTL for cached sessions (30 minutes) */
+const SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
+
+/**
  * Claude SDK Provider - Uses Anthropic API directly
  *
  * This provider requires ANTHROPIC_API_KEY to be set.
@@ -40,6 +55,16 @@ export class ClaudeSDKProvider implements AIProvider {
 
   private dataDir: string;
   private hardeningConfig: HardeningConfig | undefined;
+
+  /**
+   * Session cache: maps worktree/cwd paths to session IDs
+   * This allows resuming sessions when working on the same codebase,
+   * potentially reducing re-indexing time.
+   */
+  private sessionCache: Map<string, SessionCacheEntry> = new Map();
+
+  /** TTL for cached sessions */
+  private sessionCacheTtlMs: number = SESSION_CACHE_TTL_MS;
 
   constructor(
     private config: AIConfig,
@@ -159,16 +184,29 @@ export class ClaudeSDKProvider implements AIProvider {
         ];
         const allowedTools = options.allowedTools ?? defaultTools;
 
+        // Check for cached session to potentially resume
+        const cachedSessionId = options.cwd ? this.getCachedSession(options.cwd) : undefined;
+        if (cachedSessionId) {
+          logger.debug(`Found cached session for ${options.cwd}: ${cachedSessionId}`);
+        }
+
         // Build SDK options
-        type SdkOptions = Parameters<typeof sdkQuery>[0]["options"];
+        type SdkOptions = NonNullable<Parameters<typeof sdkQuery>[0]["options"]>;
+        const model = options.model ?? this.config.model;
         const sdkOptions: SdkOptions = {
           abortController,
-          model: options.model ?? this.config.model,
+          ...(model && { model }),
           allowedTools,
           maxTurns: options.maxTurns ?? this.config.cli.maxTurns,
           cwd: options.cwd,
           permissionMode: "bypassPermissions",
         };
+
+        // Add session resume if we have a cached session
+        if (cachedSessionId) {
+          sdkOptions.resume = cachedSessionId;
+          logger.debug(`Resuming session: ${cachedSessionId}`);
+        }
 
         // Add MCP servers if provided
         if (options.mcpServers && Object.keys(options.mcpServers).length > 0) {
@@ -239,6 +277,11 @@ export class ClaudeSDKProvider implements AIProvider {
         // Only add optional properties if they have values
         if (sessionId) {
           result.sessionId = sessionId;
+
+          // Cache the session ID for future queries in the same cwd
+          if (options.cwd && isSuccess) {
+            this.cacheSession(options.cwd, sessionId);
+          }
         }
         if (!isSuccess) {
           result.error = `SDK execution failed: ${resultMessage.subtype}`;
@@ -289,5 +332,89 @@ export class ClaudeSDKProvider implements AIProvider {
 
   getUsage(): ProviderUsage {
     return { ...this.usage };
+  }
+
+  /**
+   * Get a cached session ID for a given working directory
+   * Returns undefined if no valid cached session exists
+   */
+  getCachedSession(cwd: string): string | undefined {
+    const entry = this.sessionCache.get(cwd);
+    if (!entry) {
+      return undefined;
+    }
+
+    // Check if session has expired
+    const now = Date.now();
+    if (now - entry.lastUsedAt.getTime() > this.sessionCacheTtlMs) {
+      logger.debug(`Session cache expired for ${cwd}`);
+      this.sessionCache.delete(cwd);
+      return undefined;
+    }
+
+    return entry.sessionId;
+  }
+
+  /**
+   * Cache a session ID for a given working directory
+   */
+  cacheSession(cwd: string, sessionId: string): void {
+    const existing = this.sessionCache.get(cwd);
+    if (existing) {
+      // Update existing entry
+      existing.sessionId = sessionId;
+      existing.lastUsedAt = new Date();
+      existing.queryCount++;
+      logger.debug(`Updated cached session for ${cwd} (queries: ${existing.queryCount})`);
+    } else {
+      // Create new entry
+      this.sessionCache.set(cwd, {
+        sessionId,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        queryCount: 1,
+      });
+      logger.debug(`Cached new session for ${cwd}`);
+    }
+  }
+
+  /**
+   * Clear the session cache (for testing or cleanup)
+   */
+  clearSessionCache(): void {
+    const count = this.sessionCache.size;
+    this.sessionCache.clear();
+    logger.debug(`Cleared ${count} cached sessions`);
+  }
+
+  /**
+   * Get session cache statistics (for testing/monitoring)
+   */
+  getSessionCacheStats(): {
+    size: number;
+    entries: Array<{ cwd: string; queryCount: number; ageMs: number }>;
+  } {
+    const now = Date.now();
+    const entries: Array<{ cwd: string; queryCount: number; ageMs: number }> = [];
+
+    for (const [cwd, entry] of this.sessionCache.entries()) {
+      entries.push({
+        cwd,
+        queryCount: entry.queryCount,
+        ageMs: now - entry.createdAt.getTime(),
+      });
+    }
+
+    return {
+      size: this.sessionCache.size,
+      entries,
+    };
+  }
+
+  /**
+   * Set the session cache TTL (for testing)
+   */
+  setSessionCacheTtl(ttlMs: number): void {
+    this.sessionCacheTtlMs = ttlMs;
   }
 }

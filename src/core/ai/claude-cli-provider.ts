@@ -387,8 +387,9 @@ export class ClaudeCLIProvider implements AIProvider {
     }
 
     // Model selection (if supported)
-    if (options.model ?? this.config.model) {
-      args.push("--model", options.model ?? this.config.model);
+    const model = options.model ?? this.config.model;
+    if (model) {
+      args.push("--model", model);
     }
 
     // The prompt is passed via stdin, but we can also use -p for simple prompts

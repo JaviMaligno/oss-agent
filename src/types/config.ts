@@ -6,7 +6,8 @@ export const AIConfigSchema = z.object({
   // CLI mode is default for local dev (uses your existing claude auth)
   // SDK mode requires ANTHROPIC_API_KEY
   executionMode: z.enum(["cli", "sdk"]).default("cli"),
-  model: z.string().default("claude-sonnet-4-20250514"),
+  // Model to use. If not specified, Claude CLI uses its default (best available model)
+  model: z.string().optional(),
   apiKey: z.string().optional(),
   // CLI-specific options
   cli: z

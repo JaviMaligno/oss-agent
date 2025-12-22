@@ -266,7 +266,7 @@ export class IssueProcessor {
       issueUrl: options.issueUrl,
       status: "active",
       provider: this.aiProvider.name,
-      model: this.config.ai.model,
+      model: this.config.ai.model ?? null,
       startedAt: new Date(),
       lastActivityAt: new Date(),
       completedAt: null,
@@ -289,8 +289,26 @@ export class IssueProcessor {
       issue.state = "in_progress";
     }
 
+    // Detect test command for single-session mode
+    const testCommand = this.detectTestCommand(worktreePath);
+    const maxFixIterations = options.maxLocalFixIterations ?? this.maxLocalTestFixIterations;
+    const useSingleSession = options.singleSession ?? false;
+
     // Build the prompt for the AI
-    const prompt = this.buildPrompt(issueData, owner, repo, branchName);
+    const prompt = useSingleSession
+      ? this.buildSingleSessionPrompt(
+          issueData,
+          owner,
+          repo,
+          branchName,
+          testCommand,
+          maxFixIterations
+        )
+      : this.buildPrompt(issueData, owner, repo, branchName);
+
+    if (useSingleSession) {
+      logger.info("Using single-session mode (coder will run tests and fix in one session)");
+    }
 
     // Check health before AI query (if health checker is configured)
     if (this.healthChecker) {
@@ -326,7 +344,7 @@ export class IssueProcessor {
         options.maxBudgetUsd ?? this.budgetManager.getEffectivePerIssueBudget();
       queryResult = await this.aiProvider.query(prompt, {
         cwd: worktreePath,
-        model: this.config.ai.model,
+        ...(this.config.ai.model && { model: this.config.ai.model }),
         maxTurns: this.config.ai.cli.maxTurns,
         maxBudgetUsd: effectiveBudget,
       });
@@ -455,31 +473,52 @@ export class IssueProcessor {
     }
 
     // Run local tests and fix before pushing (if tests exist)
-    logger.step(6, 7, "Running local tests before push...");
-    const maxFixIterations = options.maxLocalFixIterations ?? this.maxLocalTestFixIterations;
-    const localTestResult = await this.runLocalTestsWithFix(
-      worktreePath,
-      branchName,
-      issueData,
-      owner,
-      repo,
-      queryResult.sessionId,
-      maxFixIterations
-    );
+    // Skip this in single-session mode as the coder already ran tests
+    let localTestResult: { success: boolean; fixesApplied: number; lastError?: string } = {
+      success: true,
+      fixesApplied: 0,
+    };
 
-    if (!localTestResult.success) {
-      logger.warn(`Local tests failed after ${maxFixIterations} fix attempts`);
-      logger.warn(`Last error: ${localTestResult.lastError}`);
-      // Continue to push anyway - CI will catch remaining issues
-    }
+    if (useSingleSession) {
+      logger.step(6, 7, "Skipping separate test loop (single-session mode)...");
+      // In single-session mode, just verify tests pass (no fix loop)
+      if (testCommand) {
+        const testResult = await this.runCommand(testCommand, worktreePath);
+        if (!testResult.success) {
+          logger.warn("Tests still failing after single-session - CI will catch remaining issues");
+          localTestResult = {
+            success: false,
+            fixesApplied: 0,
+            lastError: testResult.output.slice(0, 500),
+          };
+        }
+      }
+    } else {
+      logger.step(6, 7, "Running local tests before push...");
+      localTestResult = await this.runLocalTestsWithFix(
+        worktreePath,
+        branchName,
+        issueData,
+        owner,
+        repo,
+        queryResult.sessionId,
+        maxFixIterations
+      );
 
-    // Re-commit if there were fixes
-    if (localTestResult.fixesApplied > 0) {
-      const hasNewChanges = await this.gitOps.hasUncommittedChanges(worktreePath);
-      if (hasNewChanges) {
-        const fixCommitMessage = `fix: Address test failures for #${issueNumber}`;
-        await this.gitOps.commit(worktreePath, fixCommitMessage);
-        logger.info(`Committed ${localTestResult.fixesApplied} test fix(es)`);
+      if (!localTestResult.success) {
+        logger.warn(`Local tests failed after ${maxFixIterations} fix attempts`);
+        logger.warn(`Last error: ${localTestResult.lastError}`);
+        // Continue to push anyway - CI will catch remaining issues
+      }
+
+      // Re-commit if there were fixes
+      if (localTestResult.fixesApplied > 0) {
+        const hasNewChanges = await this.gitOps.hasUncommittedChanges(worktreePath);
+        if (hasNewChanges) {
+          const fixCommitMessage = `fix: Address test failures for #${issueNumber}`;
+          await this.gitOps.commit(worktreePath, fixCommitMessage);
+          logger.info(`Committed ${localTestResult.fixesApplied} test fix(es)`);
+        }
       }
     }
 
@@ -1292,7 +1331,7 @@ Focus on making the tests pass while maintaining the intent of the original chan
       try {
         const queryOptions: Parameters<typeof this.aiProvider.query>[1] = {
           cwd: worktreePath,
-          model: this.config.ai.model,
+          ...(this.config.ai.model && { model: this.config.ai.model }),
           maxTurns: 30,
           maxBudgetUsd: 2,
         };

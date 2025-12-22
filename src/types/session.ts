@@ -6,7 +6,7 @@ export interface Session {
   issueUrl: string;
   status: SessionStatus;
   provider: string;
-  model: string;
+  model: string | null;
   startedAt: Date;
   lastActivityAt: Date;
   completedAt: Date | null;
