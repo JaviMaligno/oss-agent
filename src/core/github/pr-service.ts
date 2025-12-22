@@ -333,15 +333,22 @@ export class PRService {
     if (status === "completed") {
       switch (conclusion) {
         case "success":
+        case "neutral": // Informational-only checks (like some code review bots)
           return "success";
         case "failure":
+        case "timed_out":
+        case "startup_failure":
           return "failure";
         case "cancelled":
           return "cancelled";
         case "skipped":
+        case "action_required": // Usually means "optional" or "needs manual approval"
+        case "stale":
           return "skipped";
         default:
-          return "failure";
+          // For unknown conclusions, treat as skipped rather than failing
+          // This handles cases like "skipping" from Vercel Agent Review
+          return "skipped";
       }
     }
     return "pending";

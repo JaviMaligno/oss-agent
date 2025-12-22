@@ -104,9 +104,12 @@ export class CICheckPoller {
           : checks;
 
         // Categorize checks
+        // Note: "skipped" and "cancelled" are treated as passed - they don't require fixes
         const pendingChecks = relevantChecks.filter((c) => c.status === "pending");
         const failedChecks = relevantChecks.filter((c) => c.status === "failure");
-        const passedChecks = relevantChecks.filter((c) => c.status === "success");
+        const passedChecks = relevantChecks.filter(
+          (c) => c.status === "success" || c.status === "skipped" || c.status === "cancelled"
+        );
         const completedChecks = relevantChecks.filter((c) => c.status !== "pending");
 
         // Report progress
@@ -172,7 +175,9 @@ export class CICheckPoller {
       status: "timeout",
       checks: relevantChecks,
       failedChecks: relevantChecks.filter((c) => c.status === "failure"),
-      passedChecks: relevantChecks.filter((c) => c.status === "success"),
+      passedChecks: relevantChecks.filter(
+        (c) => c.status === "success" || c.status === "skipped" || c.status === "cancelled"
+      ),
       duration: Date.now() - startTime,
       pollCount,
     };

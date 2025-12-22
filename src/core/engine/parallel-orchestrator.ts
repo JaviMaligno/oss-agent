@@ -30,6 +30,8 @@ export interface ParallelWorkOptions {
   waitForCIChecks?: boolean;
   /** Auto-fix failed CI checks */
   autoFixCI?: boolean;
+  /** Maximum iterations for local test fix loop */
+  maxLocalFixIterations?: number;
 }
 
 export interface ParallelStatus {
@@ -349,6 +351,10 @@ export class ParallelOrchestrator {
 
       if (options.autoFixCI !== undefined) {
         processOptions.autoFixCI = options.autoFixCI;
+      }
+
+      if (options.maxLocalFixIterations !== undefined) {
+        processOptions.maxLocalFixIterations = options.maxLocalFixIterations;
       }
 
       const result = await processor.processIssue(processOptions);

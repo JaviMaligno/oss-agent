@@ -25,7 +25,7 @@ const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const GH_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
 
 /** Default maximum iterations for local test fix loop */
-const DEFAULT_MAX_LOCAL_FIX_ITERATIONS = 5;
+const DEFAULT_MAX_LOCAL_FIX_ITERATIONS = 10;
 
 export interface ProcessIssueOptions {
   /** URL of the GitHub issue */
@@ -46,6 +46,8 @@ export interface ProcessIssueOptions {
   waitForCIChecks?: boolean | undefined;
   /** Auto-fix failed CI checks */
   autoFixCI?: boolean | undefined;
+  /** Maximum iterations for local test fix loop */
+  maxLocalFixIterations?: number | undefined;
 }
 
 export interface ProcessIssueResult {
@@ -440,17 +442,19 @@ export class IssueProcessor {
 
     // Run local tests and fix before pushing (if tests exist)
     logger.step(6, 7, "Running local tests before push...");
+    const maxFixIterations = options.maxLocalFixIterations ?? this.maxLocalTestFixIterations;
     const localTestResult = await this.runLocalTestsWithFix(
       worktreePath,
       branchName,
       issueData,
       owner,
       repo,
-      queryResult.sessionId
+      queryResult.sessionId,
+      maxFixIterations
     );
 
     if (!localTestResult.success) {
-      logger.warn(`Local tests failed after ${this.maxLocalTestFixIterations} fix attempts`);
+      logger.warn(`Local tests failed after ${maxFixIterations} fix attempts`);
       logger.warn(`Last error: ${localTestResult.lastError}`);
       // Continue to push anyway - CI will catch remaining issues
     }
@@ -1102,7 +1106,8 @@ Changes prepared with assistance from OSS-Agent`;
     issueData: { title: string; body: string },
     owner: string,
     repo: string,
-    resumeSessionId?: string
+    resumeSessionId?: string,
+    maxIterationsOverride?: number
   ): Promise<{ success: boolean; fixesApplied: number; lastError?: string }> {
     const testCmd = this.detectTestCommand(worktreePath);
 
@@ -1114,7 +1119,7 @@ Changes prepared with assistance from OSS-Agent`;
     let fixesApplied = 0;
     let lastError: string | undefined;
 
-    const maxIterations = this.maxLocalTestFixIterations;
+    const maxIterations = maxIterationsOverride ?? this.maxLocalTestFixIterations;
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       logger.info(`Running local tests (attempt ${iteration + 1}/${maxIterations}): ${testCmd}`);
 
