@@ -100,6 +100,13 @@ export class WebhookHandler {
    * Handle incoming HTTP request
    */
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
+    // Health check endpoint for Render/load balancers
+    if (req.url === "/health" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", timestamp: new Date().toISOString() }));
+      return;
+    }
+
     if (req.method !== "POST") {
       res.writeHead(405);
       res.end("Method Not Allowed");

@@ -1,0 +1,30 @@
+# Render Blueprint for oss-agent webhook server
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: oss-agent-webhook
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon # or fra (Frankfurt), sgp (Singapore)
+    plan: free # or starter, standard, pro
+    healthCheckPath: /health
+    envVars:
+      # GitHub token for gh CLI authentication (required)
+      - key: GITHUB_TOKEN
+        sync: false # Set manually in Render dashboard
+      # Webhook secret for signature verification (recommended)
+      - key: WEBHOOK_SECRET
+        sync: false
+      # Anthropic API key for iterate command (required for auto-iterate)
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Optional: allowed repositories (comma-separated)
+      - key: ALLOWED_REPOS
+        sync: false
+      # Optional: disable auto-iterate
+      - key: AUTO_ITERATE
+        value: "true"
+      # Optional: delete branch on merge
+      - key: DELETE_BRANCH_ON_MERGE
+        value: "true"

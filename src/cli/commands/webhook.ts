@@ -39,16 +39,24 @@ interface WebhookOptions {
 async function runWebhook(options: WebhookOptions): Promise<void> {
   logger.header("OSS Agent - Webhook Server");
 
-  logger.info(`Port: ${options.port}`);
-  if (options.secret) {
+  // Support environment variables as fallback for Render/Docker deployment
+  const port = options.port ?? parseInt(process.env.PORT ?? "3000", 10);
+  const secret = options.secret ?? process.env.WEBHOOK_SECRET;
+  const reposEnv = options.repos ?? process.env.ALLOWED_REPOS;
+  const autoIterate = options.autoIterate && process.env.AUTO_ITERATE !== "false";
+  const deleteBranchOnMerge =
+    options.deleteBranchOnMerge || process.env.DELETE_BRANCH_ON_MERGE === "true";
+
+  logger.info(`Port: ${port}`);
+  if (secret) {
     logger.info("Secret: configured");
   } else {
     logger.warn("No secret configured - webhook signatures will not be verified");
   }
-  logger.info(`Auto-iterate: ${options.autoIterate ? "enabled" : "disabled"}`);
-  logger.info(`Delete branch on merge: ${options.deleteBranchOnMerge ? "enabled" : "disabled"}`);
+  logger.info(`Auto-iterate: ${autoIterate ? "enabled" : "disabled"}`);
+  logger.info(`Delete branch on merge: ${deleteBranchOnMerge ? "enabled" : "disabled"}`);
 
-  const allowedRepos = options.repos ? options.repos.split(",").map((r) => r.trim()) : undefined;
+  const allowedRepos = reposEnv ? reposEnv.split(",").map((r) => r.trim()) : undefined;
 
   if (allowedRepos) {
     logger.info(`Allowed repos: ${allowedRepos.join(", ")}`);
@@ -57,11 +65,11 @@ async function runWebhook(options: WebhookOptions): Promise<void> {
   console.error("");
 
   const handler = new WebhookHandler({
-    port: options.port,
-    secret: options.secret,
+    port,
+    secret,
     allowedRepos,
-    autoIterate: options.autoIterate,
-    deleteBranchOnMerge: options.deleteBranchOnMerge,
+    autoIterate,
+    deleteBranchOnMerge,
   });
 
   // Handle shutdown
@@ -81,8 +89,9 @@ async function runWebhook(options: WebhookOptions): Promise<void> {
 
   logger.info("");
   logger.info("Webhook endpoints:");
-  logger.info(`  POST http://localhost:${options.port}/`);
-  logger.info(`  POST http://localhost:${options.port}/webhook`);
+  logger.info(`  POST http://localhost:${port}/`);
+  logger.info(`  POST http://localhost:${port}/webhook`);
+  logger.info(`  GET  http://localhost:${port}/health`);
   logger.info("");
   logger.info("Press Ctrl+C to stop");
 
