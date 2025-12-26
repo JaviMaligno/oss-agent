@@ -1,0 +1,16 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    # Every 14 minutes (Render suspends after 15 min of inactivity)
+    - cron: '*/14 * * * *'
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          curl -sf https://oss-agent.onrender.com/health || exit 1
+          echo "Service is alive"
