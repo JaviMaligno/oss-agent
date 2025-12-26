@@ -32,6 +32,8 @@ export interface IterationOptions {
   feedbackIds?: string[];
   /** Don't push changes, just make them locally */
   dryRun?: boolean;
+  /** Automatically resolve merge conflicts (default: true) */
+  autoResolveConflicts?: boolean;
 }
 
 export class IterationHandler {
@@ -73,7 +75,7 @@ export class IterationHandler {
     const { owner, repo, prNumber } = parsed;
 
     // Fetch PR feedback
-    logger.step(1, 5, "Fetching PR feedback...");
+    logger.step(1, 6, "Fetching PR feedback...");
     let feedback: FeedbackParseResult;
     try {
       const { pr, reviews, comments, checks } = await this.prService.getPRFeedback(
@@ -134,6 +136,63 @@ export class IterationHandler {
       return this.failResult(`Worktree not found at ${workRecord.worktreePath}`, startTime);
     }
 
+    // Handle merge conflicts if PR has them
+    if (feedback.pr.mergeable === false) {
+      logger.step(2, 6, "Resolving merge conflicts...");
+
+      const autoResolve = options.autoResolveConflicts !== false; // Default to true
+
+      // Fetch latest from origin
+      await this.gitOps.fetch(workRecord.worktreePath, "origin");
+
+      // Check if we need to rebase
+      const needsRebase = await this.gitOps.needsRebase(
+        workRecord.worktreePath,
+        feedback.pr.baseBranch
+      );
+
+      if (needsRebase) {
+        logger.info(`Branch needs rebase against ${feedback.pr.baseBranch}`);
+
+        // Attempt automatic rebase
+        const rebaseResult = await this.gitOps.rebase(
+          workRecord.worktreePath,
+          feedback.pr.baseBranch
+        );
+
+        if (!rebaseResult.success && rebaseResult.hasConflicts) {
+          if (autoResolve) {
+            // Get conflicted files and ask AI to resolve them
+            const conflictedFiles = await this.gitOps.getConflictedFiles(workRecord.worktreePath);
+            logger.info(`Found ${conflictedFiles.length} file(s) with conflicts`);
+
+            const resolved = await this.resolveConflictsWithAI(
+              workRecord.worktreePath,
+              conflictedFiles,
+              feedback.pr.baseBranch,
+              options.maxBudgetUsd
+            );
+
+            if (!resolved) {
+              await this.gitOps.abortRebase(workRecord.worktreePath);
+              return this.failResult(
+                "Failed to resolve merge conflicts automatically. Please resolve manually.",
+                startTime
+              );
+            }
+          } else {
+            await this.gitOps.abortRebase(workRecord.worktreePath);
+            return this.failResult(
+              "PR has merge conflicts. Use --auto-resolve-conflicts to resolve automatically.",
+              startTime
+            );
+          }
+        }
+      }
+    } else {
+      logger.step(2, 6, "Checking for conflicts... none found");
+    }
+
     // Get issue and session
     const issue = this.stateManager.getIssue(workRecord.issueId);
     if (!issue) {
@@ -146,7 +205,7 @@ export class IterationHandler {
     }
 
     // Create new session for this iteration
-    logger.step(2, 5, "Creating iteration session...");
+    logger.step(3, 6, "Creating iteration session...");
     const session = this.stateManager.createSession({
       issueId: issue.id,
       issueUrl: issue.url,
@@ -178,7 +237,7 @@ export class IterationHandler {
     const prompt = this.buildIterationPrompt(feedback, itemsToAddress, issue);
 
     // Execute AI query
-    logger.step(3, 5, "Invoking AI to address feedback...");
+    logger.step(4, 6, "Invoking AI to address feedback...");
     let queryResult: QueryResult;
 
     try {
@@ -254,7 +313,7 @@ export class IterationHandler {
     );
 
     // Commit changes
-    logger.step(4, 5, "Committing changes...");
+    logger.step(5, 6, "Committing changes...");
     const commitMessage = this.buildCommitMessage(itemsToAddress);
     await this.gitOps.commit(workRecord.worktreePath, commitMessage);
 
@@ -263,7 +322,7 @@ export class IterationHandler {
 
     // Push if not dry run
     if (!options.dryRun) {
-      logger.step(5, 5, "Pushing changes...");
+      logger.step(6, 6, "Pushing changes...");
       await this.gitOps.push(workRecord.worktreePath, workRecord.branchName);
     } else {
       logger.info("Dry run - skipping push");
@@ -493,6 +552,67 @@ Focus on addressing the feedback efficiently and correctly.`;
     // Search all work records for matching PR URL
     const allRecords = this.stateManager.getAllWorkRecords();
     return allRecords.find((record) => record.prUrl === prUrl) ?? null;
+  }
+
+  /**
+   * Resolve merge conflicts using AI
+   */
+  private async resolveConflictsWithAI(
+    worktreePath: string,
+    conflictedFiles: string[],
+    baseBranch: string,
+    maxBudgetUsd?: number
+  ): Promise<boolean> {
+    const prompt = `You are resolving merge conflicts after a rebase.
+
+## Conflicted Files
+${conflictedFiles.map((f) => `- ${f}`).join("\n")}
+
+## Instructions
+
+Please resolve the merge conflicts in the files listed above. For each file:
+
+1. Open the file and look for conflict markers (<<<<<<< HEAD, =======, >>>>>>> ${baseBranch})
+2. Understand what changes were made in both versions
+3. Resolve the conflict by keeping the correct code (usually combining both changes appropriately)
+4. Remove all conflict markers
+
+After resolving ALL conflicts:
+1. Stage each resolved file with \`git add <file>\`
+2. Run \`git rebase --continue\` to complete the rebase
+
+IMPORTANT:
+- Keep the intent of both changes when possible
+- Ensure the code compiles/type-checks after resolution
+- Do NOT make unrelated changes
+- Focus ONLY on resolving the conflicts`;
+
+    try {
+      const result = await this.aiProvider.query(prompt, {
+        cwd: worktreePath,
+        ...(this.config.ai.model && { model: this.config.ai.model }),
+        maxTurns: this.config.ai.cli.maxTurns,
+        maxBudgetUsd: maxBudgetUsd ?? this.config.budget.perIssueLimitUsd,
+      });
+
+      if (!result.success) {
+        logger.error(`AI failed to resolve conflicts: ${result.error}`);
+        return false;
+      }
+
+      // Verify conflicts are resolved
+      const stillHasConflicts = await this.gitOps.hasConflicts(worktreePath);
+      if (stillHasConflicts) {
+        logger.error("AI did not resolve all conflicts");
+        return false;
+      }
+
+      logger.success("Merge conflicts resolved successfully");
+      return true;
+    } catch (error) {
+      logger.error(`Error resolving conflicts: ${error}`);
+      return false;
+    }
   }
 
   /**

@@ -416,6 +416,101 @@ export class GitOperations {
   }
 
   /**
+   * Check if the current branch needs rebase against a base branch
+   * Returns true if the base branch has commits not in the current branch
+   */
+  async needsRebase(repoPath: string, baseBranch: string): Promise<boolean> {
+    try {
+      // Count commits in base that are not in HEAD
+      const result = await this.git(["rev-list", "--count", `HEAD..origin/${baseBranch}`], {
+        cwd: repoPath,
+      });
+      const count = parseInt(result.trim(), 10);
+      return count > 0;
+    } catch {
+      // If the command fails, assume we might need rebase
+      return true;
+    }
+  }
+
+  /**
+   * Attempt to rebase current branch onto a base branch
+   * Returns true if rebase succeeded, false if there were conflicts
+   */
+  async rebase(
+    repoPath: string,
+    baseBranch: string,
+    remote: string = "origin"
+  ): Promise<{ success: boolean; hasConflicts: boolean }> {
+    try {
+      await this.git(["rebase", `${remote}/${baseBranch}`], { cwd: repoPath });
+      return { success: true, hasConflicts: false };
+    } catch (error) {
+      // Check if it's a conflict
+      const hasConflicts = await this.hasConflicts(repoPath);
+      if (hasConflicts) {
+        return { success: false, hasConflicts: true };
+      }
+      // Other error
+      throw error;
+    }
+  }
+
+  /**
+   * Check if there are unresolved merge/rebase conflicts
+   */
+  async hasConflicts(repoPath: string): Promise<boolean> {
+    try {
+      const status = await this.git(["status", "--porcelain"], { cwd: repoPath });
+      // Conflict markers: UU, AA, DD, AU, UA, DU, UD
+      return status.split("\n").some((line) => /^(UU|AA|DD|AU|UA|DU|UD)\s/.test(line));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Get list of files with conflicts
+   */
+  async getConflictedFiles(repoPath: string): Promise<string[]> {
+    const status = await this.git(["status", "--porcelain"], { cwd: repoPath });
+    return status
+      .split("\n")
+      .filter((line) => /^(UU|AA|DD|AU|UA|DU|UD)\s/.test(line))
+      .map((line) => line.slice(3).trim());
+  }
+
+  /**
+   * Abort an in-progress rebase
+   */
+  async abortRebase(repoPath: string): Promise<void> {
+    try {
+      await this.git(["rebase", "--abort"], { cwd: repoPath });
+    } catch {
+      // May not be in a rebase state
+    }
+  }
+
+  /**
+   * Continue rebase after conflicts are resolved
+   */
+  async continueRebase(repoPath: string): Promise<boolean> {
+    try {
+      await this.git(["rebase", "--continue"], { cwd: repoPath });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Mark a file as resolved during rebase
+   */
+  async markResolved(repoPath: string, filePath: string): Promise<void> {
+    await this.git(["add", filePath], { cwd: repoPath });
+  }
+
+  /**
    * Create a worktree from a specific remote ref (for external PRs)
    */
   async createWorktreeFromRef(
