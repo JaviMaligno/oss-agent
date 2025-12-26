@@ -312,10 +312,15 @@ export class IterationHandler {
       `Changes: ${diffStats.files} files, +${diffStats.insertions} -${diffStats.deletions}`
     );
 
-    // Commit changes
+    // Commit changes (only if there are uncommitted changes - Claude CLI may have committed already)
     logger.step(5, 6, "Committing changes...");
-    const commitMessage = this.buildCommitMessage(itemsToAddress);
-    await this.gitOps.commit(workRecord.worktreePath, commitMessage);
+    const hasUncommittedChanges = await this.gitOps.hasUncommittedChanges(workRecord.worktreePath);
+    if (hasUncommittedChanges) {
+      const commitMessage = this.buildCommitMessage(itemsToAddress);
+      await this.gitOps.commit(workRecord.worktreePath, commitMessage);
+    } else {
+      logger.info("AI already committed changes");
+    }
 
     // Get new commit SHA
     const newCommitSha = await this.gitOps.getHeadSha(workRecord.worktreePath);

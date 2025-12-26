@@ -18,7 +18,7 @@ interface FeedbackOptions {
   actionable: boolean;
   limit: string;
   json: boolean;
-  verbose: boolean;
+  details: boolean;
 }
 
 interface PRFeedbackInfo {
@@ -45,7 +45,7 @@ export function createFeedbackCommand(): Command {
     .option("-a, --actionable", "Only show PRs with actionable feedback", false)
     .option("-n, --limit <count>", "Maximum number of PRs to show", "20")
     .option("--json", "Output as JSON", false)
-    .option("-v, --verbose", "Show detailed feedback items", false)
+    .option("-d, --details", "Show detailed feedback items", false)
     .action(async (options: FeedbackOptions) => {
       await runFeedback(options);
     });
@@ -153,7 +153,7 @@ async function runFeedback(options: FeedbackOptions): Promise<void> {
     if (options.json) {
       outputJson(feedbackInfos);
     } else {
-      outputHuman(feedbackInfos, options.verbose);
+      outputHuman(feedbackInfos, options.details);
     }
 
     stateManager.close();
