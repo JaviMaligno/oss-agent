@@ -389,6 +389,71 @@ export class GitOperations {
   }
 
   /**
+   * Add a remote to the repository
+   */
+  async addRemote(repoPath: string, name: string, url: string): Promise<void> {
+    // Check if remote already exists
+    try {
+      const remotes = await this.git(["remote"], { cwd: repoPath });
+      if (remotes.includes(name)) {
+        logger.debug(`Remote ${name} already exists`);
+        return;
+      }
+    } catch {
+      // Ignore errors, try to add anyway
+    }
+
+    logger.info(`Adding remote: ${name} -> ${url}`);
+    await this.git(["remote", "add", name, url], { cwd: repoPath });
+  }
+
+  /**
+   * Fetch from a remote
+   */
+  async fetch(repoPath: string, remote: string = "origin"): Promise<void> {
+    logger.debug(`Fetching from ${remote}`);
+    await this.git(["fetch", remote], { cwd: repoPath });
+  }
+
+  /**
+   * Create a worktree from a specific remote ref (for external PRs)
+   */
+  async createWorktreeFromRef(
+    repoPath: string,
+    branchName: string,
+    identifier: string,
+    remoteRef: string
+  ): Promise<string> {
+    const sanitizedId = identifier.replace(/[#/]/g, "-");
+    const worktreeName = `${basename(repoPath)}-${sanitizedId}`;
+    const worktreePath = join(this.worktreesDir, worktreeName);
+
+    if (existsSync(worktreePath)) {
+      logger.debug(`Worktree already exists: ${worktreePath}`);
+      // Update to latest
+      await this.git(["pull", "--rebase"], { cwd: worktreePath });
+      return worktreePath;
+    }
+
+    logger.info(`Creating worktree from ${remoteRef}: ${worktreePath}`);
+
+    // Create a local branch tracking the remote ref
+    try {
+      await this.git(["branch", "-D", branchName], { cwd: repoPath });
+    } catch {
+      // Branch may not exist, that's fine
+    }
+
+    // Create branch from remote ref
+    await this.git(["branch", branchName, remoteRef], { cwd: repoPath });
+
+    // Create worktree
+    await this.git(["worktree", "add", worktreePath, branchName], { cwd: repoPath });
+
+    return worktreePath;
+  }
+
+  /**
    * Check if there are uncommitted changes (staged or unstaged)
    */
   async hasUncommittedChanges(cwd: string): Promise<boolean> {

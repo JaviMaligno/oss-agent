@@ -3,14 +3,25 @@
  */
 
 import { Config } from "../../types/config.js";
-import { Issue, IssueWorkRecord } from "../../types/issue.js";
-import { ActionableFeedback, FeedbackParseResult, IterationResult } from "../../types/pr.js";
+import type { Issue, IssueWorkRecord } from "../../types/issue.js";
+import {
+  ActionableFeedback,
+  FeedbackParseResult,
+  IterationResult,
+  PullRequest,
+} from "../../types/pr.js";
 import { AIProvider, QueryResult } from "../ai/types.js";
 import { GitOperations } from "../git/git-operations.js";
 import { StateManager } from "../state/state-manager.js";
 import { PRService } from "../github/pr-service.js";
 import { FeedbackParser } from "../github/feedback-parser.js";
 import { logger } from "../../infra/logger.js";
+
+interface ExternalPRSetupResult {
+  success: boolean;
+  workRecord?: IssueWorkRecord;
+  error?: string;
+}
 
 export interface IterationOptions {
   /** PR URL to iterate on */
@@ -104,13 +115,17 @@ export class IterationHandler {
 
     logger.info(`Found ${itemsToAddress.length} feedback item(s) to address`);
 
-    // Find the work record for this PR
-    const workRecord = this.findWorkRecord(options.prUrl);
+    // Find or create work record for this PR
+    let workRecord = this.findWorkRecord(options.prUrl);
+
     if (!workRecord) {
-      return this.failResult(
-        "No work record found for this PR. Was it created by oss-agent?",
-        startTime
-      );
+      // Try to set up external PR
+      logger.info("No work record found - setting up external PR...");
+      const setupResult = await this.setupExternalPR(owner, repo, prNumber, feedback.pr);
+      if (!setupResult.success) {
+        return this.failResult(setupResult.error ?? "Failed to setup external PR", startTime);
+      }
+      workRecord = setupResult.workRecord!;
     }
 
     // Verify worktree exists
@@ -137,7 +152,7 @@ export class IterationHandler {
       issueUrl: issue.url,
       status: "active",
       provider: this.aiProvider.name,
-      model: this.config.ai.model ?? null,
+      model: this.config.ai.model ?? "default",
       startedAt: new Date(),
       lastActivityAt: new Date(),
       completedAt: null,
@@ -149,13 +164,15 @@ export class IterationHandler {
       error: null,
     });
 
-    // Transition issue to iterating
-    this.stateManager.transitionIssue(
-      issue.id,
-      "iterating",
-      `Addressing ${itemsToAddress.length} feedback item(s)`,
-      session.id
-    );
+    // Transition issue to iterating (skip if already iterating)
+    if (issue.state !== "iterating") {
+      this.stateManager.transitionIssue(
+        issue.id,
+        "iterating",
+        `Addressing ${itemsToAddress.length} feedback item(s)`,
+        session.id
+      );
+    }
 
     // Build prompt for AI
     const prompt = this.buildIterationPrompt(feedback, itemsToAddress, issue);
@@ -356,6 +373,117 @@ Focus on addressing the feedback efficiently and correctly.`;
     }
 
     return lines.join("\n");
+  }
+
+  /**
+   * Set up an external PR for iteration (one not created by oss-agent)
+   * Clones repo, fetches PR branch, creates worktree, and creates necessary records
+   */
+  private async setupExternalPR(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    pr: PullRequest
+  ): Promise<ExternalPRSetupResult> {
+    try {
+      // Get detailed PR info including fork details
+      const prDetails = await this.prService.getPRDetails(owner, repo, prNumber);
+
+      const headOwner = prDetails.headOwner;
+      const headRepo = prDetails.headRepo;
+      const headBranch = pr.headBranch;
+      const isFork = headOwner !== owner;
+
+      logger.debug(
+        `PR from ${isFork ? "fork" : "same repo"}: ${headOwner}/${headRepo}:${headBranch}`
+      );
+
+      // Clone the base repo
+      const repoUrl = `https://github.com/${owner}/${repo}.git`;
+      const cloneResult = await this.gitOps.clone(repoUrl, owner, repo);
+
+      // If PR is from a fork, add fork remote and fetch
+      if (isFork) {
+        const forkUrl = `https://github.com/${headOwner}/${headRepo}.git`;
+        await this.gitOps.addRemote(cloneResult.path, "pr-source", forkUrl);
+        await this.gitOps.fetch(cloneResult.path, "pr-source");
+      } else {
+        // Fetch origin to get latest branches
+        await this.gitOps.fetch(cloneResult.path, "origin");
+      }
+
+      // Create worktree for the PR branch
+      const worktreePath = await this.gitOps.createWorktreeFromRef(
+        cloneResult.path,
+        headBranch,
+        `pr-${prNumber}`,
+        isFork ? `pr-source/${headBranch}` : `origin/${headBranch}`
+      );
+
+      // Create a virtual issue for this external PR
+      const projectId = `${owner}/${repo}`;
+      const issueId = `${owner}/${repo}#${prNumber}`;
+      const issueUrl = pr.linkedIssueUrl ?? pr.url;
+
+      const issue: Issue = {
+        id: issueId,
+        url: issueUrl,
+        number: prNumber,
+        title: `[External PR] ${pr.title}`,
+        body: pr.body,
+        labels: [],
+        state: "iterating",
+        author: pr.author,
+        assignee: null,
+        createdAt: pr.createdAt,
+        updatedAt: pr.updatedAt,
+        projectId,
+        hasLinkedPR: true,
+        linkedPRUrl: pr.url,
+      };
+
+      this.stateManager.saveIssue(issue);
+
+      // Create a session for this iteration
+      const session = this.stateManager.createSession({
+        issueId: issue.id,
+        issueUrl: issue.url,
+        status: "active",
+        provider: this.aiProvider.name,
+        model: this.config.ai.model ?? "default",
+        startedAt: new Date(),
+        lastActivityAt: new Date(),
+        completedAt: null,
+        turnCount: 0,
+        costUsd: 0,
+        prUrl: pr.url,
+        workingDirectory: worktreePath,
+        canResume: true,
+        error: null,
+      });
+
+      // Create work record
+      const workRecord: IssueWorkRecord = {
+        issueId: issue.id,
+        sessionId: session.id,
+        branchName: headBranch,
+        worktreePath,
+        prNumber,
+        prUrl: pr.url,
+        attempts: 1,
+        lastAttemptAt: new Date(),
+        totalCostUsd: 0,
+      };
+
+      this.stateManager.saveWorkRecord(workRecord);
+
+      logger.success(`External PR setup complete: ${worktreePath}`);
+
+      return { success: true, workRecord };
+    } catch (error) {
+      logger.error(`Failed to setup external PR: ${error}`);
+      return { success: false, error: String(error) };
+    }
   }
 
   /**

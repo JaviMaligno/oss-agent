@@ -354,6 +354,30 @@ export class PRService {
     return "pending";
   }
 
+  /**
+   * Get detailed PR info including fork/head repository details
+   */
+  async getPRDetails(
+    owner: string,
+    repo: string,
+    prNumber: number
+  ): Promise<{ headOwner: string; headRepo: string; headBranch: string; isFork: boolean }> {
+    const json = await this.runGh([
+      "api",
+      `repos/${owner}/${repo}/pulls/${prNumber}`,
+      "--jq",
+      "{headOwner: .head.repo.owner.login, headRepo: .head.repo.name, headBranch: .head.ref, baseOwner: .base.repo.owner.login}",
+    ]);
+
+    const data = JSON.parse(json);
+    return {
+      headOwner: data.headOwner,
+      headRepo: data.headRepo,
+      headBranch: data.headBranch,
+      isFork: data.headOwner !== data.baseOwner,
+    };
+  }
+
   private runGh(args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn(this.ghPath, args, {
