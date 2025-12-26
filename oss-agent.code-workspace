@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../claude-orchestrator"
+		},
+		{
+			"path": "../meridian"
+		}
+	],
+	"settings": {}
+}

@@ -18,6 +18,7 @@ import {
   createQueueCommand,
   createCancelCommand,
   createPrsCommand,
+  createFeedbackCommand,
   createRunCommand,
   createInternalCommand,
   createCampaignCommand,
@@ -60,6 +61,7 @@ program.addCommand(createSuggestCommand());
 program.addCommand(createQueueCommand());
 program.addCommand(createCancelCommand());
 program.addCommand(createPrsCommand());
+program.addCommand(createFeedbackCommand());
 program.addCommand(createRunCommand());
 program.addCommand(createCampaignCommand());
 program.addCommand(createInternalCommand());

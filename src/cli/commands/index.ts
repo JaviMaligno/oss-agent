@@ -13,6 +13,7 @@ export { createSuggestCommand } from "./suggest.js";
 export { createQueueCommand } from "./queue.js";
 export { createCancelCommand } from "./cancel.js";
 export { createPrsCommand } from "./prs.js";
+export { createFeedbackCommand } from "./feedback.js";
 export { createRunCommand } from "./run.js";
 export { createCampaignCommand } from "./campaign.js";
 export { createInternalCommand } from "./internal.js";
