@@ -408,6 +408,36 @@ export const MCPConfigSchema = z.object({
   tools: MCPToolsSchema.default({}),
 });
 
+// === Skills Configuration ===
+
+export const SkillsRegistryConfigSchema = z.object({
+  // Enable fetching skills from remote registry
+  enabled: z.boolean().default(false),
+  // Registry URL
+  url: z.string().url().optional(),
+  // Local cache directory
+  cache: z.string().default("~/.cache/oss-agent/skills"),
+  // Auto-update skills on startup
+  autoUpdate: z.boolean().default(true),
+});
+
+export const SkillsConfigSchema = z.object({
+  // Enable skills feature
+  enabled: z.boolean().default(true),
+  // Custom skills directory (overrides default .claude/skills/)
+  directory: z.string().optional(),
+  // Registry configuration (for remote skills)
+  registry: SkillsRegistryConfigSchema.optional(),
+  // Built-in skills to enable
+  builtin: z
+    .object({
+      featureDev: z.boolean().default(true),
+      codeReview: z.boolean().default(true),
+      commitPr: z.boolean().default(true),
+    })
+    .default({}),
+});
+
 // === Audit Configuration (Phase 7.1) ===
 
 export const AuditConfigSchema = z.object({
@@ -456,6 +486,7 @@ export const ConfigSchema = z.object({
   parallel: ParallelConfigSchema.default({}),
   hardening: HardeningConfigSchema.default({}),
   mcp: MCPConfigSchema.optional(),
+  skills: SkillsConfigSchema.default({}),
   audit: AuditConfigSchema.default({}),
   mode: z.enum(["oss", "b2b"]).default("oss"),
   oss: OSSConfigSchema.optional(),
@@ -476,6 +507,8 @@ export type QueueConfig = z.infer<typeof QueueConfigSchema>;
 export type OSSConfig = z.infer<typeof OSSConfigSchema>;
 export type B2BConfig = z.infer<typeof B2BConfigSchema>;
 export type AuditConfig = z.infer<typeof AuditConfigSchema>;
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
+export type SkillsRegistryConfig = z.infer<typeof SkillsRegistryConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 // Provider configuration types

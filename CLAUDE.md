@@ -67,6 +67,40 @@ Configuration defined with Zod schemas in `src/types/config.ts`. Loaded from:
 2. Environment variables (`ANTHROPIC_API_KEY`, `OSS_AGENT_*`)
 3. CLI flags
 
+### Skills System
+
+oss-agent includes built-in skills that provide specialized guidance for common tasks:
+
+**Available Skills** (in `.claude/skills/`):
+- `feature-dev` - Guides feature development with project-specific patterns
+- `code-review` - PR review with security checklist and severity levels
+- `commit-pr` - Git commit conventions and PR templates
+
+**How Skills Work:**
+- Skills are markdown files with YAML frontmatter
+- Claude automatically loads skills from `.claude/skills/` when matching tasks
+- In SDK mode, skills are enabled via `settingSources: ["user", "project"]`
+
+**Skill Module** (`src/core/skills/`):
+- `types.ts` - Universal skill interface supporting multiple providers
+- `loader.ts` - Loads skills from filesystem
+- `adapters/` - Provider-specific adapters (Claude, Gemini, OpenAI stubs)
+
+**Configuration** (`skills` in config):
+```json
+{
+  "skills": {
+    "enabled": true,
+    "directory": ".claude/skills",
+    "builtin": {
+      "featureDev": true,
+      "codeReview": true,
+      "commitPr": true
+    }
+  }
+}
+```
+
 ### Current CLI Commands
 
 **Core Workflow:**

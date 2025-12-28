@@ -147,7 +147,7 @@ export class ClaudeSDKProvider implements AIProvider {
     // Set up watchdog for hung detection
     const watchdog = new Watchdog("claude-sdk-query", {
       timeoutMs,
-      onTimeout: (ctx) => {
+      onTimeout: (ctx): void => {
         logger.warn(`SDK query watchdog timeout`, {
           elapsed: Date.now() - ctx.startedAt.getTime(),
         });
@@ -172,7 +172,9 @@ export class ClaudeSDKProvider implements AIProvider {
 
       try {
         // Determine allowed tools
+        // Include "Skill" by default to enable Claude Code skills from .claude/skills/
         const defaultTools = [
+          "Skill",
           "Read",
           "Write",
           "Edit",
@@ -193,6 +195,8 @@ export class ClaudeSDKProvider implements AIProvider {
         // Build SDK options
         type SdkOptions = NonNullable<Parameters<typeof sdkQuery>[0]["options"]>;
         const model = options.model ?? this.config.model;
+        // Note: Skills from .claude/skills/ are automatically loaded by the SDK
+        // when the cwd contains a .claude/skills/ directory
         const sdkOptions: SdkOptions = {
           abortController,
           ...(model && { model }),
